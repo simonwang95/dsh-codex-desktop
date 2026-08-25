@@ -13,32 +13,42 @@ $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $tempRoot = Join-Path $tempBase ("dsh-desktop-smoke-$([guid]::NewGuid().ToString('N'))")
 $userDataDir = Join-Path $tempRoot 'user-data'
 $dshHome = Join-Path $tempRoot 'dsh-home'
+$stdoutPath = Join-Path $tempRoot 'application.stdout.log'
+$stderrPath = Join-Path $tempRoot 'application.stderr.log'
 New-Item -ItemType Directory -Path $userDataDir, $dshHome -Force | Out-Null
 $previousDshHome = $env:DSH_HOME
 $env:DSH_HOME = $dshHome
 $application = $null
 $bootstrapProcessId = $null
 
-try {
-  $application = Start-Process -FilePath $resolvedApplication -ArgumentList "--user-data-dir=$userDataDir", '--smoke-test' -PassThru
-  $deadline = (Get-Date).AddSeconds(60)
-  $port = $null
-  while ((Get-Date) -lt $deadline -and $null -eq $port) {
-    $bootstrap = Get-CimInstance Win32_Process | Where-Object {
-      $_.ParentProcessId -eq $application.Id -and $_.CommandLine -like '*bootstrap.mjs*'
-    } | Select-Object -First 1
-    if ($null -ne $bootstrap) {
-      $bootstrapProcessId = $bootstrap.ProcessId
-      $listener = Get-NetTCPConnection -OwningProcess $bootstrapProcessId -State Listen -ErrorAction SilentlyContinue |
-        Where-Object { $_.LocalAddress -eq '127.0.0.1' } |
-        Select-Object -First 1
-      if ($null -ne $listener) { $port = $listener.LocalPort }
+function Read-ApplicationOutput {
+  $output = @()
+  foreach ($path in @($stdoutPath, $stderrPath)) {
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+      $output += Get-Content -LiteralPath $path -Raw -ErrorAction SilentlyContinue
     }
-    if ($null -eq $port) { Start-Sleep -Milliseconds 500 }
   }
-  if ($null -eq $port) { throw '打包应用在 60 秒内未启动本机 HTTP 服务。' }
+  return ($output -join "`n").Trim()
+}
 
-  $baseUrl = "http://127.0.0.1:$port"
+try {
+  $application = Start-Process -FilePath $resolvedApplication -ArgumentList "--user-data-dir=$userDataDir", '--smoke-test' -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+  $deadline = (Get-Date).AddSeconds(180)
+  $baseUrl = $null
+  while ((Get-Date) -lt $deadline -and $null -eq $baseUrl) {
+    $application.Refresh()
+    if ($application.HasExited) { throw "打包应用提前退出（退出码 $($application.ExitCode)）：$(Read-ApplicationOutput)" }
+    $ready = [regex]::Match((Read-ApplicationOutput), 'DSH_SMOKE_READY\s+(?<url>http://127\.0\.0\.1:\d+)')
+    if ($ready.Success) { $baseUrl = $ready.Groups['url'].Value }
+    if ($null -eq $baseUrl) { Start-Sleep -Milliseconds 250 }
+  }
+  if ($null -eq $baseUrl) { throw "打包应用在 180 秒内未输出最终 DSH 就绪地址：$(Read-ApplicationOutput)" }
+
+  $bootstrap = Get-CimInstance Win32_Process | Where-Object {
+    $_.ParentProcessId -eq $application.Id -and $_.CommandLine -like '*bootstrap.mjs*'
+  } | Select-Object -First 1
+  if ($null -ne $bootstrap) { $bootstrapProcessId = $bootstrap.ProcessId }
+
   $page = Invoke-WebRequest -Uri "$baseUrl/" -UseBasicParsing
   if ($page.StatusCode -ne 200) { throw "根页面返回 HTTP $($page.StatusCode)。" }
   $asset = [regex]::Match($page.Content, '(?:src|href)=["''](?<path>/[^"'']+\.(?:js|css))')

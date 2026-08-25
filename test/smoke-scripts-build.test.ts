@@ -9,9 +9,16 @@ test('构建产物包含所有平台冒烟脚本', () => {
   }
 })
 
-test('Windows 制品冒烟不依赖 PowerShell 只读或残留自动变量', () => {
+test('Windows 制品冒烟使用最终就绪信号且不依赖 PowerShell 只读或残留自动变量', () => {
   const script = readFileSync(join('scripts', 'smoke-windows-artifacts.ps1'), 'utf8')
+  const packageSmoke = readFileSync(join('scripts', 'smoke-package.ps1'), 'utf8')
   assert.doesNotMatch(script, /\$home\b/i)
   assert.doesNotMatch(script, /\$LASTEXITCODE/)
   assert.match(script, /\$smokeHome\b/)
+  assert.match(script, /Get-AuthenticodeSignature/)
+  assert.match(script, /SIGNING_DISABLED nsis=NotSigned/)
+  assert.match(packageSmoke, /DSH_SMOKE_READY/)
+  assert.match(packageSmoke, /-RedirectStandardOutput/)
+  assert.match(packageSmoke, /AddSeconds\(180\)/)
+  assert.doesNotMatch(packageSmoke, /Get-NetTCPConnection/)
 })

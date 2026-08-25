@@ -39,15 +39,22 @@ try {
   $env:APPDATA = $appData
   $env:LOCALAPPDATA = $localAppData
 
+  $nsisSignature = Get-AuthenticodeSignature -FilePath $nsis
+  if ($nsisSignature.Status.ToString() -ne 'NotSigned') { throw "NSIS 不应带 Authenticode 签名：$($nsisSignature.Status)" }
+
   Expand-Archive -LiteralPath $zip -DestinationPath $zipDir -Force
   $zipApplication = Get-ChildItem -LiteralPath $zipDir -Recurse -File -Filter 'DSH Codex Desktop.exe' | Select-Object -First 1 -ExpandProperty FullName
   if ([string]::IsNullOrWhiteSpace($zipApplication)) { throw 'ZIP 解压后未找到应用可执行文件。' }
+  $zipApplicationSignature = Get-AuthenticodeSignature -FilePath $zipApplication
+  if ($zipApplicationSignature.Status.ToString() -ne 'NotSigned') { throw "ZIP 应用不应带 Authenticode 签名：$($zipApplicationSignature.Status)" }
   & "$PSScriptRoot\smoke-package.ps1" -ApplicationPath $zipApplication
 
   $installer = Start-Process -FilePath $nsis -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
   if ($installer.ExitCode -ne 0) { throw "NSIS 安装失败：$($installer.ExitCode)" }
   $installedApplication = Join-Path $installDir 'DSH Codex Desktop.exe'
   if (-not (Test-Path -LiteralPath $installedApplication -PathType Leaf)) { throw 'NSIS 安装后未找到应用可执行文件。' }
+  $installedApplicationSignature = Get-AuthenticodeSignature -FilePath $installedApplication
+  if ($installedApplicationSignature.Status.ToString() -ne 'NotSigned') { throw "安装后应用不应带 Authenticode 签名：$($installedApplicationSignature.Status)" }
   & "$PSScriptRoot\smoke-package.ps1" -ApplicationPath $installedApplication
 
   $uninstaller = Get-ChildItem -LiteralPath $installDir -File -Filter 'Uninstall*.exe' | Select-Object -First 1 -ExpandProperty FullName
@@ -63,6 +70,7 @@ try {
     "ZIP_EXTRACT_START_OK file=$([System.IO.Path]::GetFileName($zip)) controlledExit=true",
     "NSIS_INSTALL_START_UNINSTALL_OK file=$([System.IO.Path]::GetFileName($nsis)) controlledExit=true",
     'PROFILE_SENTINEL_OK path=isolated-home/.dsh/i004-profile-sentinel.txt preservedAfterUninstall=true',
+    'SIGNING_DISABLED nsis=NotSigned zipApplication=NotSigned installedApplication=NotSigned',
     "ARTIFACT file=$([System.IO.Path]::GetFileName($nsis)) bytes=$((Get-Item -LiteralPath $nsis).Length) sha256=$((Get-FileHash -LiteralPath $nsis -Algorithm SHA256).Hash.ToLowerInvariant())",
     "ARTIFACT file=$([System.IO.Path]::GetFileName($zip)) bytes=$((Get-Item -LiteralPath $zip).Length) sha256=$((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant())",
     'WINDOWS_ARTIFACT_SMOKE_OK nsis=true zip=true uninstall=true profilePreserved=true'

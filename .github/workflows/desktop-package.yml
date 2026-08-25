@@ -67,7 +67,10 @@ jobs:
             "runner_os=$env:RUNNER_OS",
             "runner_arch=$env:RUNNER_ARCH",
             "node=$(node --version)",
-            "pnpm=$(pnpm --version)"
+            "pnpm=$(pnpm --version)",
+            "signing=disabled",
+            "publish=never",
+            "artifact_retention_days=7"
           ) | Set-Content -LiteralPath 'release\windows-x64-build.txt' -Encoding UTF8
 
       - name: 上传 7 天临时 artifact
