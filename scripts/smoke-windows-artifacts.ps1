@@ -14,11 +14,11 @@ $zip = (Resolve-Path -LiteralPath $ZipPath).Path
 $evidence = [System.IO.Path]::GetFullPath($EvidencePath)
 $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $root = Join-Path $tempBase ("dsh-artifact-smoke-$([guid]::NewGuid().ToString('N'))")
-$home = Join-Path $root 'home'
-$dshProfile = Join-Path $home '.dsh'
+$smokeHome = Join-Path $root 'home'
+$dshProfile = Join-Path $smokeHome '.dsh'
 $sentinel = Join-Path $dshProfile 'i004-profile-sentinel.txt'
-$appData = Join-Path $home 'AppData\Roaming'
-$localAppData = Join-Path $home 'AppData\Local'
+$appData = Join-Path $smokeHome 'AppData\Roaming'
+$localAppData = Join-Path $smokeHome 'AppData\Local'
 $zipDir = Join-Path $root 'zip'
 $installDir = Join-Path $root 'installed'
 New-Item -ItemType Directory -Path $dshProfile, $appData, $localAppData, $zipDir, $installDir -Force | Out-Null
@@ -33,8 +33,8 @@ $previous = @{
 }
 
 try {
-  $env:USERPROFILE = $home
-  $env:HOME = $home
+  $env:USERPROFILE = $smokeHome
+  $env:HOME = $smokeHome
   $env:DSH_HOME = $dshProfile
   $env:APPDATA = $appData
   $env:LOCALAPPDATA = $localAppData
