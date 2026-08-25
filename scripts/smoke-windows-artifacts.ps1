@@ -43,14 +43,12 @@ try {
   $zipApplication = Get-ChildItem -LiteralPath $zipDir -Recurse -File -Filter 'DSH Codex Desktop.exe' | Select-Object -First 1 -ExpandProperty FullName
   if ([string]::IsNullOrWhiteSpace($zipApplication)) { throw 'ZIP 解压后未找到应用可执行文件。' }
   & "$PSScriptRoot\smoke-package.ps1" -ApplicationPath $zipApplication
-  if ($LASTEXITCODE -ne 0) { throw "ZIP 启动冒烟失败：$LASTEXITCODE" }
 
   $installer = Start-Process -FilePath $nsis -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
   if ($installer.ExitCode -ne 0) { throw "NSIS 安装失败：$($installer.ExitCode)" }
   $installedApplication = Join-Path $installDir 'DSH Codex Desktop.exe'
   if (-not (Test-Path -LiteralPath $installedApplication -PathType Leaf)) { throw 'NSIS 安装后未找到应用可执行文件。' }
   & "$PSScriptRoot\smoke-package.ps1" -ApplicationPath $installedApplication
-  if ($LASTEXITCODE -ne 0) { throw "NSIS 安装后启动冒烟失败：$LASTEXITCODE" }
 
   $uninstaller = Get-ChildItem -LiteralPath $installDir -File -Filter 'Uninstall*.exe' | Select-Object -First 1 -ExpandProperty FullName
   if ([string]::IsNullOrWhiteSpace($uninstaller)) { throw 'NSIS 安装后未找到卸载器。' }

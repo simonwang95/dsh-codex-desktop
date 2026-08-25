@@ -9,8 +9,9 @@ test('构建产物包含所有平台冒烟脚本', () => {
   }
 })
 
-test('Windows 制品冒烟不覆盖 PowerShell 只读 HOME 自动变量', () => {
+test('Windows 制品冒烟不依赖 PowerShell 只读或残留自动变量', () => {
   const script = readFileSync(join('scripts', 'smoke-windows-artifacts.ps1'), 'utf8')
   assert.doesNotMatch(script, /\$home\b/i)
+  assert.doesNotMatch(script, /\$LASTEXITCODE/)
   assert.match(script, /\$smokeHome\b/)
 })
