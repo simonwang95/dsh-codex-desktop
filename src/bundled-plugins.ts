@@ -18,12 +18,29 @@ export const OFFICIAL_RUNTIME: BundledPlugin = {
   version: OFFICIAL_DSH_VERSION,
 }
 
-/** 官方运行时启动必需、但 DSH 只声明为 peer 的包。auto-install-peers=false 时不会自动装上。 */
+/** 官方运行时需要、但上游只声明为 peer 的完整闭包；全部写入冻结 lock，避免 npm 跳过。 */
 export const OFFICIAL_LAUNCH_PEERS: readonly BundledPlugin[] = [
   { packageName: '@deepseek-ai/cordis-plugin-group', version: '1.0.1' },
-  { packageName: '@deepseek-ai/dsh-scope', version: OFFICIAL_DSH_VERSION },
-  { packageName: '@deepseek-ai/dsh-timeout', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-anonymous-user-id', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-atomic-write', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-authorization', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-bash-local', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-code-runtime', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-compaction', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-fs', version: OFFICIAL_DSH_VERSION },
   { packageName: '@deepseek-ai/dsh-invariants', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-output-retention', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-sandbox', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-scope', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-session-telemetry', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-session-title-llm', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-shell', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-spill', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-subagent-in-process-driver', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-timeout', version: OFFICIAL_DSH_VERSION },
+  { packageName: '@deepseek-ai/dsh-workflow', version: OFFICIAL_DSH_VERSION },
+  { packageName: 'react', version: '18.3.1' },
+  { packageName: 'react-dom', version: '18.3.1' },
 ]
 /** 默认发行是 core-only；第三方目录只能由调用方显式传入。 */
 export const BUNDLED_PLUGINS: readonly BundledPlugin[] = []

@@ -107,3 +107,18 @@ test('DSH 官方依赖族版本不一致时拒绝候选', async () => {
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('候选缺少任一非可选 peer 时在静态校验阶段拒绝', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-runtime-peer-'))
+  try {
+    await writeCandidate(root, '1.1.0')
+    await writeFile(join(root, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh',
+      version: '1.1.0',
+      peerDependencies: { '@deepseek-ai/dsh-required-peer': '^1.1.0' },
+    }), 'utf8')
+    await assert.rejects(validateRuntimeCandidate(root, '1.1.0'), /缺少必需 peer.*dsh-required-peer/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

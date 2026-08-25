@@ -192,6 +192,8 @@ test('官方运行时锁显式包含入口和启动必需 peer', () => {
   assert.equal(officialRuntimeNpmDependencies()['@deepseek-ai/dsh'], '0.1.1-rc.2')
   assert.equal(officialRuntimeNpmDependencies()['@deepseek-ai/cordis-plugin-group'], '1.0.1')
   assert.equal(officialRuntimeNpmDependencies()['@deepseek-ai/dsh-scope'], '0.1.1-rc.2')
+  assert.equal(officialRuntimeNpmDependencies()['@deepseek-ai/dsh-atomic-write'], '0.1.1-rc.2')
+  assert.equal(officialRuntimeNpmDependencies().react, '18.3.1')
 })
 
 test('桌面装配阶段给 rc.2 权限菜单应用中文补丁，且不包含本机绝对路径', async () => {

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { readdir, readFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, dirname, join, sep } from 'node:path'
 
 import { writeTextFileAtomicSync } from './atomic-file.js'
 
@@ -158,7 +158,61 @@ export async function validateRuntimeCandidate(dir: string, expectedVersion: str
   if (mismatched.length > 0) {
     throw new Error(`候选 DSH 依赖族版本不一致：${mismatched.map(([name, version]) => `${name}@${version}`).join('、')}`)
   }
+  const missingPeers = await missingRequiredRuntimePeers(dir)
+  if (missingPeers.length > 0) throw new Error(`候选运行时缺少必需 peer：${missingPeers.join('、')}`)
   return { packages, version: expectedVersion }
+}
+
+export async function missingRequiredRuntimePeers(dir: string): Promise<string[]> {
+  const manifests: string[] = []
+  await collectPackageManifests(join(dir, 'node_modules'), manifests)
+  const missing = new Set<string>()
+  for (const manifestPath of manifests) {
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+      name?: unknown
+      peerDependencies?: Record<string, string>
+      peerDependenciesMeta?: Record<string, { optional?: boolean }>
+    }
+    for (const peerName of Object.keys(manifest.peerDependencies ?? {})) {
+      if (manifest.peerDependenciesMeta?.[peerName]?.optional === true) continue
+      if (resolvePeerManifest(dirname(manifestPath), dir, peerName) !== undefined) continue
+      missing.add(`${String(manifest.name)} -> ${peerName}`)
+    }
+  }
+  return [...missing].sort()
+}
+
+async function collectPackageManifests(nodeModulesDir: string, manifests: string[], depth = 0): Promise<void> {
+  if (depth > 12 || !existsSync(nodeModulesDir)) return
+  for (const entry of await readdir(nodeModulesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === '.bin') continue
+    const entryPath = join(nodeModulesDir, entry.name)
+    if (entry.name.startsWith('@')) {
+      for (const scoped of await readdir(entryPath, { withFileTypes: true })) {
+        if (!scoped.isDirectory()) continue
+        const packageDir = join(entryPath, scoped.name)
+        const manifestPath = join(packageDir, 'package.json')
+        if (existsSync(manifestPath)) manifests.push(manifestPath)
+        await collectPackageManifests(join(packageDir, 'node_modules'), manifests, depth + 1)
+      }
+      continue
+    }
+    const manifestPath = join(entryPath, 'package.json')
+    if (existsSync(manifestPath)) manifests.push(manifestPath)
+    await collectPackageManifests(join(entryPath, 'node_modules'), manifests, depth + 1)
+  }
+}
+
+function resolvePeerManifest(packageDir: string, runtimeDir: string, peerName: string): string | undefined {
+  let current = packageDir
+  while (current === runtimeDir || current.startsWith(runtimeDir + sep)) {
+    const candidate = join(current, 'node_modules', ...peerName.split('/'), 'package.json')
+    if (existsSync(candidate)) return candidate
+    const parent = dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  return undefined
 }
 
 async function collectDshFamilyPackages(directory: string, packages: Record<string, string>, depth = 0): Promise<void> {

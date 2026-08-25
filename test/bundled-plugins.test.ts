@@ -28,6 +28,8 @@ test('官方 DSH 家族锁在同一个精确版本', () => {
   assert.equal(OFFICIAL_LAUNCH_PEERS[0]?.packageName, '@deepseek-ai/cordis-plugin-group')
   assert.equal(OFFICIAL_LAUNCH_PEERS[0]?.version, '1.0.1')
   assert.equal(officialRuntimeDependencies()['@deepseek-ai/dsh-invariants'], OFFICIAL_DSH_VERSION)
+  assert.equal(officialRuntimeDependencies()['@deepseek-ai/dsh-atomic-write'], OFFICIAL_DSH_VERSION)
+  assert.equal(officialRuntimeDependencies().react, '18.3.1')
   assert.deepEqual(officialDshVersionOverrides(), {
     '@deepseek-ai/dsh': OFFICIAL_DSH_VERSION,
     '@deepseek-ai/dsh-*': OFFICIAL_DSH_VERSION,
