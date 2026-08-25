@@ -33,9 +33,7 @@
 !endif
 
 !macro customInstall
-  DetailPrint "正在解压运行时，请稍候..."
-  nsExec::ExecToLog '"$INSTDIR\resources\node\node.exe" "$INSTDIR\resources\extract-runtime.mjs" "$INSTDIR" "$INSTDIR\resources"'
-  Pop $0
+  DetailPrint "DSH 运行时将在首次启动时完成隔离验证和原子启用。"
 !macroend
 
 ; 只按精确进程名结束主程序。Uninstall DSH Codex Desktop.exe 包含主程序文件名，

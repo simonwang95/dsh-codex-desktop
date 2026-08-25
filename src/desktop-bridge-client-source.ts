@@ -3,6 +3,7 @@ interface DesktopNavigationState {
   canForward: boolean
   canNextChat: boolean
   canPreviousChat: boolean
+  supportedActions: string[]
 }
 
 interface SessionList {
@@ -32,24 +33,6 @@ interface DesktopShellBridge {
 export function desktopBridgeClientFactory(): { apply(ctx: ClientContext): void; inject: string[] } {
     const inject = ['sessions', 'workspaces', 'layout']
 
-    const visibleSessionRows = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('.dcu-wb-session[role="treeitem"][aria-selected]')]
-      .filter(element => element.offsetParent !== null)
-
-    const selectedSessionRow = (): HTMLElement | undefined => visibleSessionRows()
-      .find(element => element.getAttribute('aria-selected') === 'true')
-
-    const clickByLabel = (patterns: RegExp[]): void => {
-      const candidates = [...document.querySelectorAll<HTMLElement>('button,[role="button"],[role="menuitem"]')]
-        .filter(element => element.offsetParent !== null)
-      candidates.find(element => {
-        const labels = [element.getAttribute('aria-label'), element.textContent]
-          .filter((label): label is string => typeof label === 'string')
-          .map(label => label.trim())
-          .filter(label => label !== '')
-        return patterns.some(pattern => labels.some(label => pattern.test(label)))
-      })?.click()
-    }
-
     const apply = (ctx: ClientContext): void => {
       const bridge = (window as Window & { dshDesktopShell?: DesktopShellBridge }).dshDesktopShell
       if (bridge === undefined) return
@@ -58,14 +41,14 @@ export function desktopBridgeClientFactory(): { apply(ctx: ClientContext): void;
 
       const snapshot = (): SessionList => ctx.sessions.list.getSnapshot()
       const report = (): void => {
-        const rows = visibleSessionRows()
-        const currentRow = selectedSessionRow()
-        const currentIndex = currentRow === undefined ? -1 : rows.indexOf(currentRow)
+        const sessions = snapshot()
+        const currentIndex = sessions.current === undefined ? -1 : sessions.ids.indexOf(sessions.current)
         bridge.reportState({
           canBack: historyIndex > 0,
           canForward: historyIndex >= 0 && historyIndex < history.length - 1,
           canPreviousChat: currentIndex > 0,
-          canNextChat: currentIndex >= 0 && currentIndex < rows.length - 1,
+          canNextChat: currentIndex >= 0 && currentIndex < sessions.ids.length - 1,
+          supportedActions: ['new-chat', 'open-folder', 'toggle-sidebar', 'previous-chat', 'next-chat', 'back', 'forward'],
         })
       }
       const trackCurrent = (): void => {
@@ -86,11 +69,11 @@ export function desktopBridgeClientFactory(): { apply(ctx: ClientContext): void;
         queueMicrotask(report)
       }
       const openAdjacent = (offset: number): void => {
-        const rows = visibleSessionRows()
-        const current = selectedSessionRow()
-        const index = current === undefined ? -1 : rows.indexOf(current)
-        rows[index + offset]?.click()
-        setTimeout(report, 80)
+        const sessions = snapshot()
+        const index = sessions.current === undefined ? -1 : sessions.ids.indexOf(sessions.current)
+        const id = sessions.ids[index + offset]
+        if (id !== undefined) ctx.sessions.open(id)
+        queueMicrotask(report)
       }
       const openFolder = async (): Promise<void> => {
         const path = await ctx.workspaces.pickDirectory()
@@ -116,17 +99,13 @@ export function desktopBridgeClientFactory(): { apply(ctx: ClientContext): void;
         else if (id === 'next-chat') openAdjacent(1)
         else if (id === 'back') openHistory(-1)
         else if (id === 'forward') openHistory(1)
-        else if (id === 'find') clickByLabel([/^(?:搜索会话|查找|search sessions|find)$/i])
-        else if (id === 'settings') clickByLabel([/^设置$|^settings$|preferences/i])
       }
 
       ctx.effect(() => {
         const stopAction = bridge.onAction(onAction)
         const stopList = ctx.sessions.list.subscribe(trackCurrent)
-        const observer = new MutationObserver(report)
-        observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-selected', 'class'] })
         trackCurrent()
-        return () => { stopAction(); stopList(); observer.disconnect() }
+        return () => { stopAction(); stopList() }
       }, 'desktop-shell bridge')
     }
 

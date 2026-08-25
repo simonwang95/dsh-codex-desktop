@@ -1,5 +1,7 @@
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { writeTextFileAtomicSync } from './atomic-file.js'
 import { isDeepSeekOfficialPackage, isOfficialDshPackage } from './bundled-plugins.js'
 
 export const PROFILE_PENDING_UPDATES_FILE = '.dsh-pending-updates.json'
@@ -15,6 +17,17 @@ const EXACT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z
 /** 关于页和桌面端共用的待更新清单文件名。 */
 export function resolvePendingUpdatesPath(profileDir: string): string {
   return join(profileDir, PROFILE_PENDING_UPDATES_FILE)
+}
+
+/** 桌面 host 只登记用户明确触发的升级，真正安装和切换由主进程事务执行。 */
+export function queueProfileUpdate(profileDir: string, update: ProfilePackageUpdate): void {
+  const path = resolvePendingUpdatesPath(profileDir)
+  const current = existsSync(path) ? parsePendingUpdates(readFileSync(path, 'utf8')) : []
+  const packages = new Map(current.map(item => [item.packageName, item.version]))
+  packages.set(update.packageName, update.version)
+  writeTextFileAtomicSync(path, `${JSON.stringify({
+    packages: [...packages].map(([packageName, version]) => ({ packageName, version })),
+  }, undefined, 2)}\n`)
 }
 
 export function parsePendingUpdates(raw: string): ProfilePackageUpdate[] {

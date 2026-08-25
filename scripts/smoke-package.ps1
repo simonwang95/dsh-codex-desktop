@@ -9,14 +9,6 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
 $resolvedApplication = (Resolve-Path -LiteralPath $ApplicationPath).Path
-$installDir = Split-Path -Parent $resolvedApplication
-$resourcesDir = Join-Path $installDir 'resources'
-$bundledNode = Join-Path $resourcesDir 'node\node.exe'
-$runtimeExtractor = Join-Path $resourcesDir 'extract-runtime.mjs'
-if ((Test-Path -LiteralPath $bundledNode) -and (Test-Path -LiteralPath $runtimeExtractor)) {
-  & $bundledNode $runtimeExtractor $installDir $resourcesDir
-  if ($LASTEXITCODE -ne 0) { throw "随包运行时解压失败，退出码：$LASTEXITCODE" }
-}
 $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $tempRoot = Join-Path $tempBase ("dsh-desktop-smoke-$([guid]::NewGuid().ToString('N'))")
 $userDataDir = Join-Path $tempRoot 'user-data'
@@ -28,7 +20,7 @@ $application = $null
 $bootstrapProcessId = $null
 
 try {
-  $application = Start-Process -FilePath $resolvedApplication -ArgumentList "--user-data-dir=$userDataDir" -PassThru
+  $application = Start-Process -FilePath $resolvedApplication -ArgumentList "--user-data-dir=$userDataDir", '--smoke-test' -PassThru
   $deadline = (Get-Date).AddSeconds(60)
   $port = $null
   while ((Get-Date) -lt $deadline -and $null -eq $port) {
@@ -53,6 +45,8 @@ try {
   if (-not $asset.Success) { throw '根页面未找到可验证的前端资源。' }
   $assetResponse = Invoke-WebRequest -Uri "$baseUrl$($asset.Groups['path'].Value)" -UseBasicParsing
   if ($assetResponse.StatusCode -ne 200) { throw "前端资源返回 HTTP $($assetResponse.StatusCode)。" }
+  if (-not $application.WaitForExit(30000)) { throw '应用未在冒烟模式下受控退出。' }
+  Write-Host "SMOKE_OK application=$resolvedApplication health=$baseUrl controlledExit=true"
 } finally {
   if ($null -ne $application) {
     $application.Refresh()

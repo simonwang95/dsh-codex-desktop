@@ -67,7 +67,7 @@ test('识别插件热更新 IPC', () => {
 })
 
 test('桌面启动 DSH 时必须禁止打开系统浏览器', () => {
-  assert.deepEqual([...DSH_WEB_LAUNCH_ARGS], ['web', '--port', '0', '--no-open'])
+  assert.deepEqual([...DSH_WEB_LAUNCH_ARGS], ['web', '--host', '127.0.0.1', '--port', '0', '--no-open'])
 })
 
 test('本地联调可以复用已有 DSH Web origin', () => {

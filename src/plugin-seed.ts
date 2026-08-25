@@ -22,6 +22,7 @@ import { prependPath } from './plugin-toolchain.js'
 import { terminateProcessTree } from './process-control.js'
 import { mergeProfileUpdates, officialRuntimeUpdateVersion, parsePendingUpdates, partitionPackageUpdates, resolvePendingUpdatesPath, type ProfilePackageUpdate } from './profile-updates.js'
 import { copyPrebuiltOfficialRuntime } from './runtime-prebuilt.js'
+import { activateRuntime, currentRuntimeDir, stageRuntimeCandidate } from './runtime-manager.js'
 
 export type SeedSkipReason = 'already-installed' | 'missing-store'
 
@@ -53,6 +54,7 @@ interface SeedOptions {
   pnpmEntry?: string
   catalog?: readonly BundledPlugin[]
   runner?: (args: readonly string[]) => Promise<void>
+  validateRuntimeCandidate?: (runtimeDir: string) => Promise<void>
   timeoutMs?: number
 }
 
@@ -237,19 +239,24 @@ export function officialRuntimeInstallArgs(runtimeDir: string, storeDir?: string
 }
 
 export async function applyOfficialRuntimeVersion(options: SeedOptions, version: string): Promise<string> {
-  const runtimeDir = options.desktopRuntimeDir
-  if (runtimeDir === undefined) throw new Error('未配置官方运行时目录，无法在线升级官方包。')
-  await mkdir(runtimeDir, { recursive: true })
-  writeOfficialRuntimeManifest(runtimeDir, version)
-  if (!existsSync(join(runtimeDir, 'pnpm-workspace.yaml'))) {
-    await writeFile(join(runtimeDir, 'pnpm-workspace.yaml'), pnpmWorkspaceYaml(), 'utf8')
+  const runtimeRoot = options.desktopRuntimeDir
+  if (runtimeRoot === undefined) throw new Error('未配置官方运行时目录，无法在线升级官方包。')
+  if (version !== OFFICIAL_DSH_VERSION) {
+    throw new Error(`当前桌面构建不包含 DSH ${version} 的冻结依赖图，请先升级桌面应用。`)
   }
-  ensureAutoInstallPeersEnabled(runtimeDir)
   const runner = options.runner ?? ((pluginArgs) => runPnpm(options, pluginArgs))
-  await runner(officialRuntimeInstallArgs(runtimeDir, resolvePnpmStoreDir(runtimeDir, options.pluginStoreDir)))
-  if (!isOfficialRuntimeLaunchable(runtimeDir)) {
-    throw new Error('官方运行时升级到 ' + version + ' 后仍无法启动。')
-  }
+  await stageRuntimeCandidate({
+    root: runtimeRoot,
+    version,
+    install: async (candidateDir) => {
+      await mkdir(candidateDir, { recursive: true })
+      writeOfficialRuntimeManifest(candidateDir, version)
+      await writeFile(join(candidateDir, 'pnpm-workspace.yaml'), pnpmWorkspaceYaml(), 'utf8')
+      await runner(officialRuntimeInstallArgs(candidateDir, resolvePnpmStoreDir(candidateDir, options.pluginStoreDir)))
+    },
+    ...(options.validateRuntimeCandidate === undefined ? {} : { healthCheck: options.validateRuntimeCandidate }),
+  })
+  activateRuntime(runtimeRoot, version)
   return version
 }
 
@@ -354,43 +361,33 @@ export async function seedBundledPlugins(options: SeedOptions): Promise<SeedResu
   await stripOfficialProfileDependencies(options.profileDir)
   const community = await seedCommunityPlugins(options)
   seeded.push(...community.seeded)
-  const extraDirs = options.desktopRuntimeDir === undefined ? [] : [options.desktopRuntimeDir]
+  const activeRuntime = options.desktopRuntimeDir === undefined ? undefined : currentRuntimeDir(options.desktopRuntimeDir)
+  const extraDirs = activeRuntime === undefined ? [] : [activeRuntime]
   await finalizeProfileBundlesAfterInstall(options.profileDir, extraDirs)
   if (seeded.length === 0) return { seeded, skipped: community.skipped ?? 'already-installed' }
   return { seeded }
 }
 
 async function seedOfficialRuntime(options: SeedOptions): Promise<readonly string[]> {
-  const runtimeDir = options.desktopRuntimeDir
-  if (runtimeDir === undefined) return []
-  const seeded: string[] = []
-  ensureAutoInstallPeersEnabled(runtimeDir)
-  if (options.prebuiltRuntimeDir !== undefined && copyPrebuiltOfficialRuntime(options.prebuiltRuntimeDir, runtimeDir) === 'copied') {
-    seeded.push(OFFICIAL_RUNTIME.packageName)
-  }
-  if (!existsSync(resolveProfileDshEntry(runtimeDir))) {
-    await ensureRuntimeScaffold(runtimeDir)
-    const storeDir = resolvePnpmStoreDir(runtimeDir, existsSync(options.pluginStoreDir) ? options.pluginStoreDir : undefined)
-    const useStore = storeDir !== undefined
-    const args = buildSeedPluginArgs([OFFICIAL_RUNTIME], runtimeDir, {
-      autoInstallPeers: true,
-      ...(useStore ? { storeDir, offline: true } : {}),
+  const runtimeRoot = options.desktopRuntimeDir
+  if (runtimeRoot === undefined) return []
+  if (currentRuntimeDir(runtimeRoot) !== undefined) return []
+  if (options.prebuiltRuntimeDir !== undefined && isOfficialRuntimeLaunchable(options.prebuiltRuntimeDir)) {
+    await stageRuntimeCandidate({
+      root: runtimeRoot,
+      version: OFFICIAL_DSH_VERSION,
+      install: candidateDir => {
+        if (copyPrebuiltOfficialRuntime(options.prebuiltRuntimeDir!, candidateDir) !== 'copied') {
+          throw new Error('复制预装官方运行时失败。')
+        }
+      },
+      ...(options.validateRuntimeCandidate === undefined ? {} : { healthCheck: options.validateRuntimeCandidate }),
     })
-    const runner = options.runner ?? ((pluginArgs) => runPnpm(options, pluginArgs))
-    try {
-      await runner(args)
-    } catch (error) {
-      if (useStore) {
-        await runner(buildSeedPluginArgs([OFFICIAL_RUNTIME], runtimeDir, { autoInstallPeers: true }))
-      } else {
-        throw error
-      }
-    }
-    if (!existsSync(resolveProfileDshEntry(runtimeDir))) throw new Error('官方 DSH 运行时补种后仍未找到入口。')
-    seeded.push(OFFICIAL_RUNTIME.packageName)
+    activateRuntime(runtimeRoot, OFFICIAL_DSH_VERSION)
+    return [OFFICIAL_RUNTIME.packageName]
   }
-  seeded.push(...await ensureOfficialLaunchPeers(options, runtimeDir))
-  return seeded
+  await applyOfficialRuntimeVersion(options, OFFICIAL_DSH_VERSION)
+  return [OFFICIAL_RUNTIME.packageName]
 }
 
 async function ensureOfficialLaunchPeers(options: SeedOptions, targetDir: string): Promise<readonly string[]> {

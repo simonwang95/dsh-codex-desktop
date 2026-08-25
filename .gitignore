@@ -5,6 +5,7 @@ runtime/
 runtime-node/
 runtime-plugins/
 node_modules/
+.pnpm-store/
 
 # 开发过程产物仅保留在本地。
 coverage/

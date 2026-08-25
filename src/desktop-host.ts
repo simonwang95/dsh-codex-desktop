@@ -3,8 +3,9 @@ import { PassThrough } from 'node:stream'
 
 import { APPLY_PLUGIN_UPDATES_IPC, OFFICIAL_DSH_VERSION, isDeepSeekOfficialPackage, isOfficialDshPackage } from './bundled-plugins.js'
 import { desktopBridgeClientBundle } from './desktop-bridge-client-source.js'
-import { finalizeProfileBundlesAfterInstall, officialRuntimeInstallArgs, writeOfficialRuntimeManifest } from './plugin-seed.js'
+import { finalizeProfileBundlesAfterInstall } from './plugin-seed.js'
 import { terminateProcessTree } from './process-control.js'
+import { queueProfileUpdate } from './profile-updates.js'
 
 export const DESKTOP_BRIDGE_PACKAGE = 'dsh-desktop-bridge'
 
@@ -125,16 +126,10 @@ export function createDesktopHostServices(options: DesktopHostOptions) {
     }
     const officialVersion = officialPluginUpdateVersion(args)
     if (officialVersion !== undefined && options.desktopRuntimeDir !== undefined) {
-      writeOfficialRuntimeManifest(options.desktopRuntimeDir, officialVersion)
-      const handle = (options.runner ?? runBundledPnpm)(officialRuntimeInstallArgs(options.desktopRuntimeDir), options.desktopRuntimeDir, signal)
-      void handle.done.then(async (outcome) => {
-        if (outcome.exitCode !== 0) return
-        const delay = options.recycleDelayMs ?? 400
-        setTimeout(() => {
-          options.send?.(APPLY_PLUGIN_UPDATES_IPC)
-        }, delay).unref?.()
-      }).catch(error => { console.error('官方运行时更新后处理失败。', error) })
-      return handle
+      queueProfileUpdate(options.profileDir, { packageName: '@deepseek-ai/dsh', version: officialVersion })
+      const delay = options.recycleDelayMs ?? 400
+      setTimeout(() => { options.send?.(APPLY_PLUGIN_UPDATES_IPC) }, delay).unref?.()
+      return completedPnpmHandle(0, `已登记 DSH ${officialVersion} 候选升级，桌面端将验证后切换。\n`)
     }
     if (officialSpecs.length > 0) {
       const message = pluginCommandAction(args) === 'remove'
@@ -262,6 +257,8 @@ export const DESKTOP_BRIDGE_FILES = [
   'process-control.js',
   'readiness.js',
   'runtime-archive.js',
+  'runtime-config.js',
+  'runtime-manager.js',
   'runtime-prebuilt.js',
 ] as const
 

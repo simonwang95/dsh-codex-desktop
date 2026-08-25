@@ -1,14 +1,15 @@
-/** 桌面端随包 npm 目录。全部写入用户 profile，便于官方包和社区包在线升级。 */
+import { OFFICIAL_DSH_VERSION } from './runtime-config.js'
+
+/** 仅用于识别并保留存量 Profile；默认构建不下载、补种或替换该历史套件。 */
 
 export const SUITE_PACKAGE = '@michengai/dsh-codex-suite'
+export { OFFICIAL_DSH_VERSION }
 
 export interface BundledPlugin {
   packageName: string
   version: string
 }
 
-/** 官方 DSH 家族统一锁死的版本。打包和在线升级都按这一个号对齐。 */
-export const OFFICIAL_DSH_VERSION = '0.1.1-rc.2'
 export const APPLY_PLUGIN_UPDATES_IPC = 'apply-plugin-updates'
 
 /** 官方 DSH 运行时。从 npm 安装，不依赖本地 deepseek-harness 源码。 */
@@ -24,22 +25,14 @@ export const OFFICIAL_LAUNCH_PEERS: readonly BundledPlugin[] = [
   { packageName: '@deepseek-ai/dsh-timeout', version: OFFICIAL_DSH_VERSION },
   { packageName: '@deepseek-ai/dsh-invariants', version: OFFICIAL_DSH_VERSION },
 ]
-/** 随桌面端离线仓库分发的六个社区插件和插件市场。 */
-export const BUNDLED_PLUGINS: readonly BundledPlugin[] = [
-  { packageName: '@michengai/dsh-codex-ui', version: '0.2.68' },
-  { packageName: '@michengai/dsh-im-connect', version: '0.1.13' },
-  { packageName: '@michengai/dsh-automation', version: '0.1.5' },
-  { packageName: '@michengai/dsh-skills-manager', version: '0.1.23' },
-  { packageName: '@michengai/dsh-archive-manager', version: '0.1.12' },
-  { packageName: '@michengai/dsh-agency-agents', version: '0.1.20' },
-  { packageName: 'dshmarket', version: '1.17.1' },
-]
+/** 默认发行是 core-only；第三方目录只能由调用方显式传入。 */
+export const BUNDLED_PLUGINS: readonly BundledPlugin[] = []
 
-/** 离线 store 只放社区插件，官方运行时单独预装，避免安装包把同一份依赖打两遍。 */
+/** core-only 默认没有社区离线 store。 */
 export const STORE_PACKAGES: readonly BundledPlugin[] = BUNDLED_PLUGINS
 
-/** 首次补种的完整清单：官方运行时、六个社区插件和插件市场。 */
-export const SEEDED_PACKAGES: readonly BundledPlugin[] = [OFFICIAL_RUNTIME, ...BUNDLED_PLUGINS]
+/** 首次补种只包含官方运行时。 */
+export const SEEDED_PACKAGES: readonly BundledPlugin[] = [OFFICIAL_RUNTIME]
 
 export const OFFICIAL_PROFILE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] as const
 

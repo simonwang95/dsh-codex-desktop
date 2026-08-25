@@ -7,7 +7,7 @@ import { desktopBridgeClientBundle } from '../src/desktop-bridge-client-source.j
 type ActionListener = (id: string) => void
 type ClientPlugin = { apply(ctx: Record<string, unknown>): void }
 
-function loadClient(options: { elements?: unknown[]; errors?: string[] } = {}): {
+function loadClient(options: { elements?: unknown[]; errors?: string[]; states?: unknown[] } = {}): {
   apply(ctx: Record<string, unknown>): void
   listener(): ActionListener
 } {
@@ -23,7 +23,7 @@ function loadClient(options: { elements?: unknown[]; errors?: string[] } = {}): 
       __ModuleLoader__: { load(value: { factory(): ClientPlugin }): void { registration = value } },
       dshDesktopShell: {
         onAction(listener: ActionListener): () => void { actionListener = listener; return () => { actionListener = undefined } },
-        reportState(): void {},
+        reportState(state: unknown): void { options.states?.push(state) },
       },
     },
   }
@@ -77,7 +77,7 @@ test('创建工作区异常返回空值时也不得启动会话', async () => {
   assert.equal(errors.some(error => error.includes('workspaceId')), true)
 })
 
-test('英文 Find 只点击精确命名的会话查找按钮', () => {
+test('没有官方服务契约的 Find 不执行 DOM 猜测并从能力表禁用', () => {
   let broadClicks = 0
   let exactClicks = 0
   const element = (label: string, click: () => void) => ({
@@ -86,7 +86,9 @@ test('英文 Find 只点击精确命名的会话查找按钮', () => {
     textContent: '',
     click,
   })
+  const states: unknown[] = []
   const client = loadClient({
+    states,
     elements: [
       element('Find models', () => { broadClicks += 1 }),
       element('Find', () => { exactClicks += 1 }),
@@ -95,5 +97,6 @@ test('英文 Find 只点击精确命名的会话查找按钮', () => {
   client.apply(clientContext({ pickDirectory: async () => null, create: async () => ({}), startSession(): void {} }))
   client.listener()('find')
   assert.equal(broadClicks, 0)
-  assert.equal(exactClicks, 1)
+  assert.equal(exactClicks, 0)
+  assert.equal(JSON.stringify(states).includes('find'), false)
 })

@@ -32,15 +32,12 @@ test('桌面壳与 DSH 内容分层并复用托盘重载实现', async () => {
   assert.match(source, /title: DESKTOP_APP_NAME/)
 })
 
-test('桌面壳预加载脚本被编译并提供 DSH 动作兜底', async () => {
+test('桌面壳预加载脚本被编译且能力缺失时禁用动作', async () => {
   const config = await readFile(new URL('../../tsconfig.json', import.meta.url), 'utf8')
   const preload = await readFile(new URL('../../src/dsh-view-preload.cts', import.meta.url), 'utf8')
   assert.match(config, /src\/\*\*\/\*\.cts/)
-  assert.match(preload, /clientBridgeRegistrations/)
-  assert.match(preload, /runDomAction/)
-  assert.match(preload, /添加工作区\|打开文件夹/)
-  assert.match(preload, /\.dcu-wb-session\[role="treeitem"\]\[aria-selected\]/)
-  assert.match(preload, /\^新建任务\$/)
+  assert.match(preload, /supportedActions: \[\]/)
+  assert.doesNotMatch(preload, /querySelector|\.click\(\)|runDomAction/)
 })
 
 test('桌面菜单使用窗口内坐标且 DSH 客户端桥接导出标准插件入口', async () => {

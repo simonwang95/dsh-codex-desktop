@@ -1,21 +1,22 @@
 import { app, BrowserWindow, Menu, Tray, WebContentsView, dialog, ipcMain, nativeImage, net, protocol, session, shell, type Input, type MenuItemConstructorOptions, type WebContents } from 'electron'
 import { existsSync } from 'node:fs'
-import { writeFile as writeTextFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile as writeTextFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { DESKTOP_APP_NAME, DESKTOP_APP_USER_MODEL_ID, resolveDesktopRuntimeDir, resolveDesktopUserDataDir } from './app-identity.js'
-import { OFFICIAL_DSH_VERSION } from './bundled-plugins.js'
+import { OFFICIAL_DSH_VERSION, compareReleaseVersions } from './bundled-plugins.js'
 import { resolveAppIconPath, resolveCompactIconCrop, resolveRasterIconPath, TRAY_ICON_SIZE } from './app-icon.js'
 import { WINDOW_ICON_PIXEL_SIZES, isLoopbackFaviconRequest } from './window-icon.js'
 import { quitDesktopApp, shouldHideInsteadOfClose } from './app-lifecycle.js'
 import type { DshServer, StartDshOptions } from './dsh-process.js'
 import { isExternalOpenUrl, isSameOrigin } from './navigation.js'
-import { applyPendingProfileUpdates, resolvePnpmStoreDir, seedBundledPlugins, resolveWebProfileDir } from './plugin-seed.js'
+import { applyPendingProfileUpdates, ensureProfileScaffold, resolvePnpmStoreDir, seedBundledPlugins, resolveWebProfileDir } from './plugin-seed.js'
 import { parseUnresolvedBundleError, removeProfileBundle, startWithProfileSelfRepair } from './profile-repair.js'
 import { resolveBundledPluginStore, resolvePluginBinDir } from './plugin-toolchain.js'
 import { resolveDshBootstrap, resolveDshRuntime, resolveNodeExecutable } from './runtime.js'
-import { extractPackagedRuntimes } from './extract-runtime.js'
+import { extractPackagedRuntimeCandidate } from './extract-runtime.js'
 import { resolvePrebuiltOfficialRuntime } from './runtime-prebuilt.js'
 import { applyInitialWindowState } from './window-state.js'
 import { WindowNavigationCoordinator } from './window-navigation.js'
@@ -26,6 +27,8 @@ import { mayGetShellBootstrap, mayInvokeShellAction, mayPopupShellMenu, mayRepor
 import { watchProfileActivation } from './profile-watch.js'
 import updater from 'electron-updater'
 import { buildDesktopTrayItems, desktopUpdateChannel, desktopUpdatePrompt, formatDesktopReleaseNotes, publicDesktopUpdateError, type DesktopUpdateStatus } from './desktop-updater.js'
+import { resolveProductConfig, type ProductConfig } from './product-config.js'
+import { activateRuntime, currentRuntimeDir, currentRuntimeVersion, markCurrentRuntimeHealthy, readRuntimeState, rollbackPendingActivation, rollbackRuntime } from './runtime-manager.js'
 
 interface DshProcessModule {
   isApplyPluginUpdatesIpc: (message: unknown) => boolean
@@ -49,10 +52,12 @@ let lastStartOptions: Omit<StartDshOptions, 'onUnexpectedExit' | 'onIpcMessage'>
 let lastSeedOptions: Parameters<typeof applyPendingProfileUpdates>[0] | undefined
 let profileWatcher: { stop: () => void; sync: () => void } | undefined
 let updateStatus: DesktopUpdateStatus = { kind: 'idle' }
+let productConfig: ProductConfig = {}
+let activeRuntimeVersion = OFFICIAL_DSH_VERSION
 const { autoUpdater } = updater
 let isReportingUnexpectedError = false
 const windowNavigation = new WindowNavigationCoordinator()
-let dshNavigationState: DshNavigationState = { canBack: false, canForward: false, canNextChat: false, canPreviousChat: false }
+let dshNavigationState: DshNavigationState = { canBack: false, canForward: false, canNextChat: false, canPreviousChat: false, supportedActions: [] }
 const shellActionIds = new Set<string>(SHELL_ACTIONS.map(action => action.id))
 
 process.on('uncaughtException', handleUnexpectedMainError)
@@ -106,6 +111,7 @@ async function shutdownDesktop(exit: () => void): Promise<void> {
 
 async function startApplication(): Promise<void> {
   await app.whenReady()
+  productConfig = resolveProductConfig({ configPath: join(process.resourcesPath, 'product-config.json') })
   installShellIpc()
   installDesktopFaviconReplacement()
   Menu.setApplicationMenu(null)
@@ -126,24 +132,46 @@ async function startApplication(): Promise<void> {
       isPackaged: app.isPackaged,
       execPath: process.execPath,
     })
-    const extractedStoreDir = app.isPackaged ? join(dirname(desktopRuntimeDir), 'plugins', 'store') : undefined
+    rollbackPendingActivation(desktopRuntimeDir)
     if (app.isPackaged) {
-      extractPackagedRuntimes(process.resourcesPath, desktopRuntimeDir, extractedStoreDir!)
+      await extractPackagedRuntimeCandidate(process.resourcesPath, desktopRuntimeDir, OFFICIAL_DSH_VERSION)
     }
     const pluginStoreDir = resolveBundledPluginStore({
       ...runtimeOptions,
-      ...(extractedStoreDir === undefined ? {} : { extractedStoreDir }),
     })
     const profileStoreDir = resolvePnpmStoreDir(profileDir, pluginStoreDir)
     const prebuiltRuntimeDir = resolvePrebuiltOfficialRuntime(runtimeOptions)
     const nodeExecutable = resolveNodeExecutable(runtimeOptions)
+    const validateRuntimeCandidate = (candidateDir: string): Promise<void> => validateRuntimeCandidateHealth({
+      candidateDir,
+      nodeExecutable,
+      pathPrefix,
+      runtimeOptions,
+    })
     const seedOptions = {
       nodeExecutable,
       profileDir,
       desktopRuntimeDir,
       pluginStoreDir: pluginStoreDir ?? '',
+      validateRuntimeCandidate,
       ...(prebuiltRuntimeDir === undefined ? {} : { prebuiltRuntimeDir }),
       ...(pathPrefix === undefined ? {} : { pathPrefix }),
+    }
+    const installedVersion = currentRuntimeVersion(desktopRuntimeDir)
+    if (installedVersion !== undefined && compareReleaseVersions(OFFICIAL_DSH_VERSION, installedVersion) > 0) {
+      const prompt = await dialog.showMessageBox({
+        type: 'question',
+        title: DESKTOP_APP_NAME,
+        message: `安装包包含 DSH ${OFFICIAL_DSH_VERSION}，当前为 ${installedVersion}。是否先隔离验证并升级？`,
+        buttons: ['验证并升级', '继续使用当前版本'],
+        defaultId: 1,
+        cancelId: 1,
+      })
+      if (prompt.response === 0) {
+        const candidate = join(desktopRuntimeDir, 'versions', OFFICIAL_DSH_VERSION)
+        await validateRuntimeCandidate(candidate)
+        activateRuntime(desktopRuntimeDir, OFFICIAL_DSH_VERSION)
+      }
     }
     try {
       const seeded = await seedBundledPlugins(seedOptions)
@@ -162,8 +190,11 @@ async function startApplication(): Promise<void> {
     }
     installDesktopBridge(profileDir, resolveDesktopBridgeDir(runtimeOptions))
     lastSeedOptions = seedOptions
-    const runtime = resolveDshRuntime({ ...runtimeOptions, profileDir, desktopRuntimeDir })
-    const startOptions = {
+    const activeRuntimeDir = currentRuntimeDir(desktopRuntimeDir)
+    if (activeRuntimeDir === undefined) throw new Error('没有可启动的 current DSH 运行时。')
+    activeRuntimeVersion = currentRuntimeVersion(desktopRuntimeDir) ?? OFFICIAL_DSH_VERSION
+    const runtime = resolveDshRuntime({ ...runtimeOptions, profileDir, desktopRuntimeDir: activeRuntimeDir })
+    let startOptions: Omit<StartDshOptions, 'onUnexpectedExit' | 'onIpcMessage'> = {
       bootstrapPath: resolveDshBootstrap(runtimeOptions),
       ...(pathPrefix === undefined ? {} : { pathPrefix }),
       runtime,
@@ -173,20 +204,15 @@ async function startApplication(): Promise<void> {
         DSH_PROFILE_DIR: profileDir,
         DSH_PROFILE_NAME: 'web',
         DSH_RUNTIME_DIR: desktopRuntimeDir,
+        DSH_BUNDLED_DSH_VERSION: OFFICIAL_DSH_VERSION,
         ...(pnpmEntry === undefined ? {} : { DSH_PNPM_ENTRY: pnpmEntry }),
         ...(profileStoreDir === undefined ? {} : { DSH_PNPM_STORE_DIR: profileStoreDir }),
       },
     }
+    const managed = await startManagedRuntime(startOptions, seedOptions)
+    startOptions = managed.startOptions
     lastStartOptions = startOptions
-    const started = await startWithProfileSelfRepair({
-      profileDir,
-      extraDirs: [desktopRuntimeDir],
-      start: () => startDsh({
-        ...startOptions,
-        onUnexpectedExit: handleUnexpectedDshExit,
-        onIpcMessage: handleDshIpc,
-      }),
-    })
+    const started = managed.started
     server = started.result
     if (started.repaired.length > 0) console.log('已自我修复损坏的插件清单：' + started.repaired.join('、'))
     profileWatcher?.stop()
@@ -195,9 +221,96 @@ async function startApplication(): Promise<void> {
       runMainTask(recycleDshForPluginUpdate())
     }, { onError: handleUnexpectedMainError })
     await createMainWindow(server.url)
+    if (process.argv.includes('--smoke-test')) {
+      console.log(`DSH_SMOKE_READY ${server.url}`)
+      setTimeout(() => { runMainTask(requestQuit()) }, 5_000).unref?.()
+    }
   } catch (error) {
     await reportStartupFailure(error)
   }
+}
+
+async function validateRuntimeCandidateHealth(options: {
+  candidateDir: string
+  nodeExecutable: string
+  pathPrefix?: string
+  runtimeOptions: { appPath: string; isPackaged: boolean; resourcesPath: string }
+}): Promise<void> {
+  const isolatedRoot = await mkdtemp(join(tmpdir(), 'dsh-runtime-health-'))
+  const profileDir = join(isolatedRoot, 'profiles', 'web')
+  let candidateServer: DshServer | undefined
+  try {
+    await ensureProfileScaffold(profileDir)
+    installDesktopBridge(profileDir, resolveDesktopBridgeDir(options.runtimeOptions))
+    const runtime = resolveDshRuntime({ ...options.runtimeOptions, profileDir, desktopRuntimeDir: options.candidateDir })
+    candidateServer = await startDsh({
+      bootstrapPath: resolveDshBootstrap(options.runtimeOptions),
+      runtime,
+      nodeExecutable: options.nodeExecutable,
+      ...(options.pathPrefix === undefined ? {} : { pathPrefix: options.pathPrefix }),
+      environment: {
+        DSH_HOME: isolatedRoot,
+        DSH_PROFILE_DIR: profileDir,
+        DSH_PROFILE_NAME: 'web',
+        DSH_RUNTIME_DIR: options.candidateDir,
+        DSH_BUNDLED_DSH_VERSION: OFFICIAL_DSH_VERSION,
+      },
+    })
+  } finally {
+    await candidateServer?.stop().catch(() => undefined)
+    await rm(isolatedRoot, { recursive: true, force: true })
+  }
+}
+
+async function startManagedRuntime(
+  baseStartOptions: Omit<StartDshOptions, 'onUnexpectedExit' | 'onIpcMessage'>,
+  seedOptions: Parameters<typeof applyPendingProfileUpdates>[0],
+): Promise<{
+  startOptions: Omit<StartDshOptions, 'onUnexpectedExit' | 'onIpcMessage'>
+  started: { result: DshServer; repaired: string[] }
+}> {
+  const runtimeRoot = seedOptions.desktopRuntimeDir
+  if (runtimeRoot === undefined) throw new Error('未配置受管 DSH 运行时根目录。')
+  const resolveStartOptions = (): Omit<StartDshOptions, 'onUnexpectedExit' | 'onIpcMessage'> => {
+    const activeDir = currentRuntimeDir(runtimeRoot)
+    if (activeDir === undefined) throw new Error('current DSH 运行时不可启动。')
+    return {
+      ...baseStartOptions,
+      runtime: resolveDshRuntime({
+        appPath: app.getAppPath(),
+        isPackaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+        profileDir: seedOptions.profileDir,
+        desktopRuntimeDir: activeDir,
+      }),
+    }
+  }
+  const launch = (startOptions: Omit<StartDshOptions, 'onUnexpectedExit' | 'onIpcMessage'>) => startWithProfileSelfRepair({
+    profileDir: seedOptions.profileDir,
+    extraDirs: [startOptions.runtime.root],
+    start: () => startDsh({
+      ...startOptions,
+      onUnexpectedExit: handleUnexpectedDshExit,
+      onIpcMessage: handleDshIpc,
+    }),
+  })
+
+  let startOptions = resolveStartOptions()
+  let started: Awaited<ReturnType<typeof launch>>
+  try {
+    started = await launch(startOptions)
+  } catch (error) {
+    const state = readRuntimeState(runtimeRoot)
+    if (state.activationPending !== true || state.lastKnownGood === undefined) throw error
+    const fallback = rollbackRuntime(runtimeRoot, 'first-real-start', error)
+    await writeTextFile(join(app.getPath('userData'), 'runtime-upgrade.log'), '首次真实启动失败，已回滚 last-known-good。\n', 'utf8').catch(() => undefined)
+    if (fallback === undefined) throw error
+    startOptions = resolveStartOptions()
+    started = await launch(startOptions)
+  }
+  markCurrentRuntimeHealthy(runtimeRoot)
+  activeRuntimeVersion = currentRuntimeVersion(runtimeRoot) ?? OFFICIAL_DSH_VERSION
+  return { startOptions, started }
 }
 
 function resolveStartupHtml(): string | undefined {
@@ -323,18 +436,17 @@ async function recycleDshForPluginUpdate(): Promise<void> {
     const current = server
     server = undefined
     await current?.stop()
-    const updated = await applyPendingProfileUpdates(seedOptions)
-    if (updated.length > 0) console.log('已热更新插件：' + updated.join('、'))
-    const started = await startWithProfileSelfRepair({
-      profileDir: seedOptions.profileDir,
-      extraDirs: seedOptions.desktopRuntimeDir === undefined ? [] : [seedOptions.desktopRuntimeDir],
-      start: () => startDsh({
-        ...startOptions,
-        onUnexpectedExit: handleUnexpectedDshExit,
-        onIpcMessage: handleDshIpc,
-      }),
-    })
-    server = started.result
+    try {
+      const updated = await applyPendingProfileUpdates(seedOptions)
+      if (updated.length > 0) console.log('已热更新插件：' + updated.join('、'))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '运行时或插件升级失败。'
+      await writeTextFile(join(app.getPath('userData'), 'plugin-update.log'), `${message}\n`, 'utf8').catch(() => undefined)
+      console.error('升级失败，继续启动 current 运行时。', error)
+    }
+    const managed = await startManagedRuntime(startOptions, seedOptions)
+    lastStartOptions = managed.startOptions
+    server = managed.started.result
     await createMainWindow(server.url)
   } catch (error) {
     await reportStartupFailure(error)
@@ -474,7 +586,7 @@ function shellBootstrap(): ShellBootstrap {
     locale,
     menus: localizedShellMenus(locale),
     platform: process.platform,
-    runtimeVersion: OFFICIAL_DSH_VERSION,
+    runtimeVersion: activeRuntimeVersion,
     state: currentShellState(),
     version: app.getVersion(),
   }
@@ -514,6 +626,9 @@ function installShellIpc(): void {
       canForward: state.canForward === true,
       canNextChat: state.canNextChat === true,
       canPreviousChat: state.canPreviousChat === true,
+      supportedActions: Array.isArray(state.supportedActions)
+        ? state.supportedActions.filter((id): id is string => typeof id === 'string' && shellActionIds.has(id))
+        : [],
     }
     broadcastShellState()
   })
@@ -533,6 +648,12 @@ function isActionEnabled(id: ShellActionId): boolean {
   if (id === 'forward') return dshNavigationState.canForward
   if (id === 'previous-chat') return dshNavigationState.canPreviousChat
   if (id === 'next-chat') return dshNavigationState.canNextChat
+  if (id === 'new-chat' || id === 'open-folder' || id === 'settings' || id === 'toggle-sidebar' || id === 'find') {
+    return dshNavigationState.supportedActions.includes(id)
+  }
+  if (id === 'check-updates') return productConfig.desktopUpdateUrl !== undefined
+  if (id === 'whats-new') return productConfig.releaseNotesUrl !== undefined
+  if (id === 'feedback') return productConfig.feedbackUrl !== undefined
   return true
 }
 
@@ -606,8 +727,8 @@ async function executeShellAction(id: ShellActionId): Promise<void> {
   else if (id === 'show-shortcuts') showShortcutsWindow()
   else if (id === 'reload') await recycleDshForPluginUpdate()
   else if (id === 'check-updates') await checkDesktopUpdate()
-  else if (id === 'whats-new') await shell.openExternal('https://github.com/MichengAI/dsh-codex-desktop/releases')
-  else if (id === 'feedback') await shell.openExternal('https://github.com/MichengAI/dsh-codex-desktop/issues/new')
+  else if (id === 'whats-new' && productConfig.releaseNotesUrl !== undefined) await shell.openExternal(productConfig.releaseNotesUrl)
+  else if (id === 'feedback' && productConfig.feedbackUrl !== undefined) await shell.openExternal(productConfig.feedbackUrl)
   else if (id === 'about') showAboutWindow()
   broadcastShellState()
 }
@@ -668,9 +789,11 @@ function showAboutWindow(): void {
 }
 
 function configureDesktopUpdater(): void {
+  if (productConfig.desktopUpdateUrl === undefined) return
   autoUpdater.logger = console
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
+  autoUpdater.setFeedURL({ provider: 'generic', url: productConfig.desktopUpdateUrl })
   const channel = desktopUpdateChannel()
   if (channel !== undefined) {
     autoUpdater.channel = channel
@@ -722,6 +845,7 @@ function refreshTrayMenu(): void {
     status: updateStatus,
     currentVersion: app.getVersion(),
     packaged: app.isPackaged,
+    configured: productConfig.desktopUpdateUrl !== undefined,
   })
   tray.setContextMenu(Menu.buildFromTemplate(items.map(item => {
     if (item.type === 'separator') return { type: 'separator' }
@@ -760,6 +884,14 @@ async function handleTrayUpdateAction(id: string): Promise<void> {
 }
 
 async function checkDesktopUpdate(): Promise<void> {
+  if (productConfig.desktopUpdateUrl === undefined) {
+    await dialog.showMessageBox({
+      type: 'info',
+      title: DESKTOP_APP_NAME,
+      message: '此构建未配置桌面更新源，不会联网检查更新。',
+    })
+    return
+  }
   if (!app.isPackaged) {
     await dialog.showMessageBox({
       type: 'info',

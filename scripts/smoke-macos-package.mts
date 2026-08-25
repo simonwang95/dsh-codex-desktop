@@ -1,5 +1,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -16,7 +18,11 @@ async function main(): Promise<void> {
   const applicationExecutable = resolveMacApplicationExecutable(applicationBundle)
   if (!existsSync(applicationExecutable)) throw new Error(`未找到 macOS 应用可执行文件：${applicationExecutable}`)
 
-  const application = spawn(applicationExecutable, [], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const tempRoot = await mkdtemp(join(tmpdir(), 'dsh-mac-smoke-'))
+  const application = spawn(applicationExecutable, ['--smoke-test', `--user-data-dir=${join(tempRoot, 'user-data')}`], {
+    env: { ...process.env, DSH_HOME: join(tempRoot, 'dsh-home') },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
   if (!application.pid) throw new Error('未获取到应用进程 ID。')
   let applicationOutput = ''
   const captureOutput = (chunk: Buffer): void => {
@@ -35,12 +41,22 @@ async function main(): Promise<void> {
     if (!assetPath) throw new Error('根页面未找到可验证的前端资源。')
     const asset = await fetch(baseUrl + assetPath)
     if (asset.status !== 200) throw new Error(`前端资源返回 HTTP ${asset.status}。`)
+    await waitForControlledExit(application)
+    console.log(`SMOKE_OK application=${applicationBundle} health=${baseUrl} controlledExit=true`)
   } finally {
     await stopApplication(application)
+    await rm(tempRoot, { recursive: true, force: true })
     if (bootstrapProcessId !== undefined && isProcessRunning(bootstrapProcessId)) {
       throw new Error(`DSH 引导进程 ${bootstrapProcessId} 未在应用退出后结束。`)
     }
   }
+}
+
+async function waitForControlledExit(application: ChildProcess): Promise<void> {
+  const deadline = Date.now() + 30_000
+  while (application.exitCode === null && Date.now() < deadline) await delay(250)
+  if (application.exitCode === null) throw new Error('应用未在冒烟模式下受控退出。')
+  if (application.exitCode !== 0) throw new Error(`应用受控退出码异常：${application.exitCode}。`)
 }
 
 function readArgument(name: string): string {

@@ -75,13 +75,13 @@ test('只把官方包复制进安装目录，社区插件不走这条路径', as
   }
 })
 
-test('打包配置把离线插件仓库放到 extraResources', async () => {
+test('core-only 打包配置不携带第三方离线插件仓库', async () => {
   const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as {
     build?: { extraResources?: { from?: string; to?: string }[] }
   }
   assert.equal(
     manifest.build?.extraResources?.some(item => item.from === 'runtime-plugins/store.tgz' && item.to === 'plugins-store.tgz'),
-    true,
+    false,
   )
 })
 
@@ -172,17 +172,14 @@ test('Windows 冒烟检查使用实际产品可执行文件名', async () => {
   assert.match(workflow, /release\\win-unpacked\\DSH Codex Desktop\.exe/)
 })
 
-test('官方运行时使用 npm 安装以兼容预发布 peer 依赖', () => {
+test('官方运行时使用冻结 lock 和 npm ci 装配', () => {
   assert.deepEqual(officialRuntimeNpmInstallArgs('D:\\runtime'), [
-    'install',
-    '--global',
+    'ci',
     '--prefix=D:\\runtime',
     '--omit=dev',
-    '--package-lock=false',
+    '--legacy-peer-deps',
     '--no-audit',
     '--no-fund',
-    '--registry=https://registry.npmjs.org/',
-    '@deepseek-ai/dsh@0.1.1-rc.2',
   ])
 })
 
@@ -191,10 +188,10 @@ test('npm 全局安装目录按平台归一化', () => {
   assert.equal(officialRuntimeGlobalNodeModulesRoot('runtime', 'linux'), join('runtime', 'lib', 'node_modules'))
 })
 
-test('官方运行时仅以 DSH 入口包作为 npm 顶层依赖', () => {
-  assert.deepEqual(officialRuntimeNpmDependencies(), {
-    '@deepseek-ai/dsh': '0.1.1-rc.2',
-  })
+test('官方运行时锁显式包含入口和启动必需 peer', () => {
+  assert.equal(officialRuntimeNpmDependencies()['@deepseek-ai/dsh'], '0.1.1-rc.2')
+  assert.equal(officialRuntimeNpmDependencies()['@deepseek-ai/cordis-plugin-group'], '1.0.1')
+  assert.equal(officialRuntimeNpmDependencies()['@deepseek-ai/dsh-scope'], '0.1.1-rc.2')
 })
 
 test('桌面装配阶段给 rc.2 权限菜单应用中文补丁，且不包含本机绝对路径', async () => {
@@ -214,27 +211,25 @@ test('桌面装配阶段给 rc.2 权限菜单应用中文补丁，且不包含�
   assert.doesNotMatch(patch, /[A-Z]:\\\\Tools\\\\/i)
 })
 
-test('Windows 冒烟在启动应用前复用安装器的运行时解压入口', async () => {
+test('Windows 冒烟由应用完成候选验证并要求受控退出', async () => {
   const script = await readFile(new URL('../../scripts/smoke-package.ps1', import.meta.url), 'utf8')
   const main = await readFile(new URL('../../src/main.ts', import.meta.url), 'utf8')
-  const extractAt = script.indexOf('extract-runtime.mjs')
-  const startAt = script.indexOf('Start-Process')
-  assert.notEqual(extractAt, -1)
-  assert.equal(extractAt < startAt, true)
+  assert.doesNotMatch(script, /extract-runtime\.mjs/)
   assert.match(script, /--user-data-dir=/)
+  assert.match(script, /--smoke-test/)
+  assert.match(script, /受控退出/)
   assert.match(main, /--user-data-dir=/)
 })
 
-test('正式标签缺少签名凭据时仍允许生成多平台测试版', async () => {
+test('CI 仅手动生成未签名 Windows 临时制品，不包含标签或 Release 路径', async () => {
   const workflow = await readFile(new URL('../../.github/workflows/desktop-package.yml', import.meta.url), 'utf8')
   assert.match(workflow, /version: 11\.22\.0/)
-  assert.match(workflow, /未配置 Windows 代码签名凭据，继续生成未签名测试版/)
-  assert.match(workflow, /未配置 macOS 签名证书，继续生成未签名测试版/)
-  assert.doesNotMatch(workflow, /正式标签发布必须配置 (?:Windows|macOS)/)
-  assert.match(workflow, /\$env:CSC_LINK = \$env:WINDOWS_CERTIFICATE/)
-  assert.doesNotMatch(workflow, /CSC_LINK: \$\{\{ startsWith\(matrix\.platform/)
+  assert.match(workflow, /workflow_dispatch/)
+  assert.match(workflow, /CSC_IDENTITY_AUTO_DISCOVERY: 'false'/)
+  assert.match(workflow, /smoke-windows-artifacts\.ps1/)
+  assert.doesNotMatch(workflow, /refs\/tags|gh release|create GitHub Release|contents: write/)
   assert.match(workflow, /pnpm test\r?\n\s+if \(\$LASTEXITCODE -ne 0\) \{ exit \$LASTEXITCODE \}/)
-  assert.match(workflow, /pnpm run dist[^\r\n]*\r?\n\s+if \(\$LASTEXITCODE -ne 0\) \{ exit \$LASTEXITCODE \}/)
+  assert.match(workflow, /pnpm run dist -- --win --x64/)
 })
 
 test('打包态从 desktop-bridge 加载 DSH 主进程模块', async () => {
@@ -287,8 +282,9 @@ test('更新产物使用不会被 GitHub 改写的固定文件名', async () => 
   assert.equal(manifest.build?.linux?.artifactName, 'dsh-codex-desktop-${version}-linux-${arch}.${ext}')
 })
 
-test('macOS 双架构使用各自的更新通道元数据', async () => {
+test('手动 CI artifact 只上传 Windows EXE、ZIP 与证据', async () => {
   const workflow = await readFile(new URL('../../.github/workflows/desktop-package.yml', import.meta.url), 'utf8')
-  assert.match(workflow, /latest-arm64-mac\.yml/)
-  assert.match(workflow, /latest-x64-mac\.yml/)
+  assert.match(workflow, /release\/dsh-codex-desktop-\*-win-x64\.exe/)
+  assert.match(workflow, /release\/dsh-codex-desktop-\*-win-x64\.zip/)
+  assert.doesNotMatch(workflow, /release\/\*\*/)
 })

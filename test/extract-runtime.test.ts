@@ -1,80 +1,66 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
+import { extractPackagedRuntimeCandidate } from '../src/extract-runtime.js'
 import { packDirectoryToTarGz, writeFileSha256 } from '../src/runtime-archive.js'
-import { extractPackagedRuntimes } from '../src/extract-runtime.js'
+import { readRuntimeState } from '../src/runtime-manager.js'
 
-function createChecksums(resources: string): void {
-  writeFileSha256(join(resources, 'dsh-runtime.tgz'))
-  writeFileSha256(join(resources, 'plugins-store.tgz'))
+const version = '0.1.1-rc.2'
+
+async function writeRuntimeFixture(dir: string): Promise<void> {
+  const packages = [
+    '@deepseek-ai/dsh',
+    '@deepseek-ai/dsh-scope',
+    '@deepseek-ai/dsh-timeout',
+    '@deepseek-ai/dsh-invariants',
+  ]
+  for (const packageName of packages) {
+    const packageDir = join(dir, 'node_modules', ...packageName.split('/'))
+    await mkdir(packageDir, { recursive: true })
+    await writeFile(join(packageDir, 'package.json'), JSON.stringify({ name: packageName, version }), 'utf8')
+  }
+  const cordisDir = join(dir, 'node_modules', '@deepseek-ai', 'cordis-plugin-group')
+  await mkdir(cordisDir, { recursive: true })
+  await writeFile(join(cordisDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/cordis-plugin-group', version: '1.0.1' }), 'utf8')
+  await mkdir(join(dir, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true })
+  await writeFile(join(dir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'ok', 'utf8')
 }
 
-test('已解压过的运行时不会重复解压，内容缺失时会自愈', async () => {
+async function createArchive(root: string): Promise<string> {
+  const resources = join(root, 'resources')
+  const source = join(root, 'source')
+  await writeRuntimeFixture(source)
+  await mkdir(resources, { recursive: true })
+  const archive = join(resources, 'dsh-runtime.tgz')
+  packDirectoryToTarGz(source, archive)
+  writeFileSha256(archive)
+  return resources
+}
+
+test('随包运行时只安装为版本化候选，不静默切换 current', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-extract-'))
   try {
-    const resources = join(root, 'resources')
-    const officialSrc = join(root, 'official')
-    const storeSrc = join(root, 'store')
-    await mkdir(join(officialSrc, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true })
-    await writeFile(join(officialSrc, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'ok', 'utf8')
-    await mkdir(join(storeSrc, 'v11'), { recursive: true })
-    await writeFile(join(storeSrc, 'v11', 'keep.txt'), 'store', 'utf8')
-    await mkdir(resources, { recursive: true })
-    packDirectoryToTarGz(officialSrc, join(resources, 'dsh-runtime.tgz'))
-    packDirectoryToTarGz(storeSrc, join(resources, 'plugins-store.tgz'))
-    createChecksums(resources)
-    const runtimeDir = join(root, 'app', 'dsh-runtime')
-    const storeDir = join(root, 'app', 'plugins', 'store')
-    assert.deepEqual(extractPackagedRuntimes(resources, runtimeDir, storeDir), { official: true, store: true })
-    assert.deepEqual(extractPackagedRuntimes(resources, runtimeDir, storeDir), { official: false, store: false })
-    await unlink(join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'))
-    assert.deepEqual(extractPackagedRuntimes(resources, runtimeDir, storeDir), { official: true, store: false })
-    assert.equal(await readFile(join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'utf8'), 'ok')
+    const resources = await createArchive(root)
+    const runtimeRoot = join(root, 'user-data', 'dsh-runtime')
+    const candidate = await extractPackagedRuntimeCandidate(resources, runtimeRoot, version)
+    assert.equal(candidate, join(runtimeRoot, 'versions', version))
+    assert.equal(await readFile(join(candidate!, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'utf8'), 'ok')
+    assert.equal(readRuntimeState(runtimeRoot).current, undefined)
+    assert.equal(readRuntimeState(runtimeRoot).available, version)
+    assert.equal(await extractPackagedRuntimeCandidate(resources, runtimeRoot, version), candidate)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
 })
-
-test('运行时和插件仓库可以解压到用户数据回退目录', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-extract-fallback-'))
-  try {
-    const resources = join(root, 'resources')
-    const officialSrc = join(root, 'official')
-    const storeSrc = join(root, 'store')
-    const runtimeDir = join(root, 'user-data', 'dsh-runtime')
-    const storeDir = join(root, 'user-data', 'plugins', 'store')
-    await mkdir(join(officialSrc, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true })
-    await writeFile(join(officialSrc, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'ok', 'utf8')
-    await mkdir(join(storeSrc, 'v11'), { recursive: true })
-    await writeFile(join(storeSrc, 'v11', 'keep.txt'), 'store', 'utf8')
-    await mkdir(resources, { recursive: true })
-    packDirectoryToTarGz(officialSrc, join(resources, 'dsh-runtime.tgz'))
-    packDirectoryToTarGz(storeSrc, join(resources, 'plugins-store.tgz'))
-    createChecksums(resources)
-    assert.deepEqual(extractPackagedRuntimes(resources, runtimeDir, storeDir), { official: true, store: true })
-    assert.equal(await readFile(join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'utf8'), 'ok')
-    assert.equal(await readFile(join(storeDir, 'v11', 'keep.txt'), 'utf8'), 'store')
-  } finally {
-    await rm(root, { recursive: true, force: true })
-  }
-})
-
-test('随包归档被篡改时拒绝解压', async () => {
+test('随包归档被篡改时拒绝创建候选', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-extract-hash-'))
   try {
-    const resources = join(root, 'resources')
-    const source = join(root, 'source')
-    await mkdir(join(source, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true })
-    await writeFile(join(source, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), 'ok', 'utf8')
-    await mkdir(resources)
-    const archive = join(resources, 'dsh-runtime.tgz')
-    packDirectoryToTarGz(source, archive)
-    writeFileSha256(archive)
-    await writeFile(archive, 'tampered', 'utf8')
-    assert.throws(() => extractPackagedRuntimes(resources, join(root, 'runtime'), join(root, 'store')), /SHA256/)
+    const resources = await createArchive(root)
+    await writeFile(join(resources, 'dsh-runtime.tgz'), 'tampered', 'utf8')
+    await assert.rejects(extractPackagedRuntimeCandidate(resources, join(root, 'runtime'), version), /SHA256/)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

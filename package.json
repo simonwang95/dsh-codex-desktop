@@ -1,8 +1,8 @@
 {
   "name": "deepseek-harness-desktop",
-  "version": "1.0.26",
+  "version": "1.0.27",
   "description": "DeepSeek Harness 原生桌面启动器",
-  "author": "MichengAI",
+  "author": "DSH Codex Desktop contributors",
   "desktopName": "DSH Codex Desktop",
   "private": true,
   "license": "Apache-2.0",
@@ -13,25 +13,32 @@
     "pnpm": "11.22.0"
   },
   "config": {
-    "bundledNodeVersion": "v24.19.0",
+    "runtimeManifest": {
+      "schemaVersion": 1,
+      "dshVersion": "0.1.1-rc.2",
+      "nodeVersion": "v24.19.0",
+      "pnpmVersion": "11.22.0"
+    },
     "bundledNodeSha256": {
       "win32-x64": "3602F2BB1A10F2CBAB4C36886218A33C1AB3DB87290E73B033C46C77147D0237",
       "darwin-arm64": "27DB838BB204EF7C21DF2931F5656E4C8FB32E6E947F363A402B49714D32B5B1",
       "darwin-x64": "1052EB9C7D6C60A79B968E09F75AF55A73462B0F6DFF0964336D63B5E13EB63C",
       "linux-x64": "BC17C508FFEED0EC622934F9B7FA72F8E78DA65350E63C3ECEB56FA688AA5E12"
-    },
-    "bundledDshVersion": "0.1.1-rc.2"
+    }
   },
   "main": "dist/src/main.js",
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
+    "check:independence": "pnpm run build && node dist/scripts/check-independence.js",
     "test": "pnpm run build && node --test dist/test/*.test.js",
     "start": "pnpm run build && electron .",
     "prepare-runtime": "pnpm run build && node dist/scripts/prepare-runtime.js",
     "pack": "pnpm run prepare-runtime && electron-builder --dir",
     "dist": "pnpm run prepare-runtime && electron-builder --publish never",
+    "runtime:update": "pnpm run build && node dist/scripts/update-runtime-version.js",
     "smoke:mac": "pnpm run build && node dist/scripts/smoke-macos-package.mjs",
+    "smoke:mac:artifacts": "pnpm run build && node dist/scripts/smoke-macos-artifacts.mjs",
     "smoke:linux": "pnpm run build && node dist/scripts/smoke-linux-package.mjs"
   },
   "devDependencies": {
@@ -42,11 +49,10 @@
     "typescript": "5.9.3"
   },
   "build": {
-    "appId": "ai.micheng.deepseekHarnessDesktop",
+    "appId": "desktop.dsh.codex",
     "productName": "DSH Codex Desktop",
     "icon": "assets/icon.png",
     "asar": true,
-    "afterSign": "dist/scripts/notarize.mjs",
     "directories": {
       "output": "release"
     },
@@ -81,12 +87,12 @@
         "to": "runtime-archive.js"
       },
       {
-        "from": "runtime-plugins/store.tgz",
-        "to": "plugins-store.tgz"
+        "from": "dist/src/runtime-manager.js",
+        "to": "runtime-manager.js"
       },
       {
-        "from": "runtime-plugins/store.tgz.sha256",
-        "to": "plugins-store.tgz.sha256"
+        "from": "dist/src/atomic-file.js",
+        "to": "atomic-file.js"
       },
       {
         "from": "runtime-dsh.tgz",
@@ -143,6 +149,8 @@
           "process-control.js",
           "readiness.js",
           "runtime-archive.js",
+          "runtime-config.js",
+          "runtime-manager.js",
           "runtime-prebuilt.js"
         ]
       }
@@ -158,6 +166,7 @@
     "mac": {
       "icon": "assets/icons/icon.icns",
       "category": "public.app-category.developer-tools",
+      "identity": null,
       "target": [
         "dmg",
         "zip"
@@ -167,7 +176,7 @@
     "linux": {
       "category": "Development",
       "executableName": "dsh-codex-desktop",
-      "maintainer": "MichengAI <coolyujiyu@qq.com>",
+      "maintainer": "DSH Codex Desktop contributors",
       "syncDesktopName": true,
       "target": [
         "AppImage",
@@ -192,19 +201,9 @@
         "from": "assets/icons/icon.ico",
         "to": "DSH Codex Desktop.ico"
       }
-    ],
-    "publish": {
-      "provider": "github",
-      "owner": "MichengAI",
-      "repo": "dsh-codex-desktop",
-      "releaseType": "release"
-    }
+    ]
   },
   "dependencies": {
     "electron-updater": "^6.8.9"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/MichengAI/dsh-codex-desktop.git"
   }
 }

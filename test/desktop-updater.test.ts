@@ -5,12 +5,12 @@ import test from 'node:test'
 import { buildDesktopTrayItems, DESKTOP_UPDATE_WARNING, desktopUpdateChannel, desktopUpdatePrompt, formatDesktopReleaseNotes, publicDesktopUpdateError } from '../src/desktop-updater.js'
 
 test('开发态和空闲态都提供手动检查，不自动下载', () => {
-  const idle = buildDesktopTrayItems({ status: { kind: 'idle' }, currentVersion: '0.1.4', packaged: true })
+  const idle = buildDesktopTrayItems({ status: { kind: 'idle' }, currentVersion: '0.1.4', packaged: true, configured: true })
   assert.equal(idle.some(item => item.id === 'check' && item.enabled), true)
   assert.equal(idle.some(item => item.id === 'check' && item.label === '检查更新…'), true)
   assert.equal(idle.some(item => item.id === 'download'), false)
   assert.equal(idle.some(item => item.id === 'reload' && item.label === '重新加载'), true)
-  const dev = buildDesktopTrayItems({ status: { kind: 'idle' }, currentVersion: '0.1.4', packaged: false })
+  const dev = buildDesktopTrayItems({ status: { kind: 'idle' }, currentVersion: '0.1.4', packaged: false, configured: true })
   assert.equal(dev.some(item => item.id === 'check' && item.enabled), true)
   assert.equal(dev.some(item => item.id === 'check' && item.label === '检查更新…'), true)
   assert.equal(dev.some(item => item.id === 'reload' && item.enabled), true)
@@ -21,6 +21,7 @@ test('发现新版本后托盘只出现下载安装，不出现自动安装文�
     status: { kind: 'available', version: '0.1.5' },
     currentVersion: '0.1.4',
     packaged: true,
+    configured: true,
   })
   assert.equal(items.some(item => item.id === 'download' && item.label === '下载并安装 0.1.5'), true)
   assert.equal(items.some(item => item.id === 'check'), false)
@@ -31,6 +32,7 @@ test('下载完成后托盘改为安装并重启', () => {
     status: { kind: 'ready', version: '0.1.5' },
     currentVersion: '0.1.4',
     packaged: true,
+    configured: true,
   })
   assert.equal(items.some(item => item.id === 'install' && item.label.includes('0.1.5')), true)
 })
@@ -58,16 +60,15 @@ test('更新错误不得回传本地路径', () => {
   assert.match(publicDesktopUpdateError(new Error('getaddrinfo ENOTFOUND github.com')), /无法检查/)
 })
 
-test('打包配置把更新源指到 GitHub Releases', async () => {
+test('打包配置不带默认发布源，未配置时托盘明确禁用', async () => {
   const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as {
     dependencies?: Record<string, string>
-    repository?: { url?: string }
     build?: { publish?: { provider?: string; owner?: string; repo?: string } | Array<{ provider?: string }> }
   }
   assert.ok(manifest.dependencies?.['electron-updater'])
-  assert.match(String(manifest.repository?.url), /MichengAI\/dsh-codex-desktop/)
-  const publish = Array.isArray(manifest.build?.publish) ? manifest.build?.publish[0] : manifest.build?.publish
-  assert.equal(publish?.provider, 'github')
+  assert.equal(manifest.build?.publish, undefined)
+  const disabled = buildDesktopTrayItems({ status: { kind: 'idle' }, currentVersion: '1.0.27', packaged: true, configured: false })
+  assert.equal(disabled.some(item => item.id === 'update-unconfigured' && !item.enabled), true)
 })
 
 test('主进程不得在启动时自动检查更新', async () => {
@@ -77,5 +78,7 @@ test('主进程不得在启动时自动检查更新', async () => {
   assert.doesNotMatch(main, /import \{ autoUpdater \} from 'electron-updater'/)
   assert.match(main, /autoDownload = false/)
   assert.match(main, /function checkDesktopUpdate/)
+  assert.match(main, /productConfig\.desktopUpdateUrl === undefined/)
+  assert.match(main, /setFeedURL\(\{ provider: 'generic'/)
   assert.doesNotMatch(main, /createTray\(\)\s*void checkDesktopUpdate/)
 })

@@ -1,52 +1,31 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { existsSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { extractTarGz, verifyFileSha256 } from './runtime-archive.js'
+import { stageRuntimeCandidate } from './runtime-manager.js'
 
-function officialEntry(dir: string): string {
-  return join(dir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
-}
-
-/** 首启把随包压缩包原子解压到已选定的可写目录。 */
-export function extractPackagedRuntimes(resourcesDir: string, officialDest: string, storeDest: string): { official: boolean; store: boolean } {
-  const officialArchive = join(resourcesDir, 'dsh-runtime.tgz')
-  const storeArchive = join(resourcesDir, 'plugins-store.tgz')
-  return {
-    official: extractOnce(officialArchive, officialDest, officialEntry),
-    store: extractOnce(storeArchive, storeDest, dir => join(dir, 'v11')),
-  }
-}
-
-function extractOnce(archivePath: string, destDir: string, readyPath: (dir: string) => string): boolean {
-  const completeMarker = join(destDir, '.dsh-extract-complete')
-  if (!existsSync(archivePath)) return false
-  if (existsSync(completeMarker) && existsSync(readyPath(destDir))) return false
-  rmSync(completeMarker, { force: true })
-  verifyFileSha256(archivePath)
-  mkdirSync(dirname(destDir), { recursive: true })
-  const stagingDir = mkdtempSync(join(dirname(destDir), `.${basename(destDir)}-`))
-  try {
-    extractTarGz(archivePath, stagingDir)
-    if (!existsSync(readyPath(stagingDir))) throw new Error(`压缩包内容不完整：${archivePath}`)
-    if (existsSync(completeMarker)) return false
-    if (process.platform === 'win32') {
-      mkdirSync(destDir, { recursive: true })
-      cpSync(stagingDir, destDir, { recursive: true, force: true })
-    } else {
-      rmSync(destDir, { recursive: true, force: true })
-      renameSync(stagingDir, destDir)
-    }
-    writeFileSync(completeMarker, '', 'utf8')
-    return true
-  } finally {
-    rmSync(stagingDir, { recursive: true, force: true })
-  }
+/** 校验随包归档并安装到版本化候选目录；这里只 staging，不切换 current。 */
+export async function extractPackagedRuntimeCandidate(
+  resourcesDir: string,
+  runtimeRoot: string,
+  version: string,
+): Promise<string | undefined> {
+  const archive = join(resourcesDir, 'dsh-runtime.tgz')
+  if (!existsSync(archive)) return undefined
+  verifyFileSha256(archive)
+  return stageRuntimeCandidate({
+    root: runtimeRoot,
+    version,
+    install: directory => { extractTarGz(archive, directory) },
+  })
 }
 
 const self = fileURLToPath(import.meta.url)
 if (process.argv[1] && resolve(process.argv[1]) === self) {
   const installDir = process.argv[2] ?? dirname(dirname(self))
   const resourcesDir = process.argv[3] ?? join(installDir, 'resources')
-  extractPackagedRuntimes(resourcesDir, join(installDir, 'dsh-runtime'), join(installDir, 'plugins', 'store'))
+  const version = process.argv[4]
+  if (version === undefined) throw new Error('安装阶段缺少 DSH 运行时版本参数。')
+  await extractPackagedRuntimeCandidate(resourcesDir, join(installDir, 'dsh-runtime'), version)
 }

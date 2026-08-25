@@ -74,6 +74,7 @@ export function buildDesktopTrayItems(input: {
   status: DesktopUpdateStatus
   currentVersion: string
   packaged: boolean
+  configured: boolean
 }): DesktopTrayItem[] {
   const items: DesktopTrayItem[] = [
     { id: 'show', label: '显示窗口', enabled: true, type: 'normal' },
@@ -82,7 +83,9 @@ export function buildDesktopTrayItems(input: {
     { id: 'version', label: `当前版本 ${input.currentVersion}`, enabled: false, type: 'normal' },
   ]
 
-  if (!input.packaged) {
+  if (!input.configured) {
+    items.push({ id: 'update-unconfigured', label: '桌面更新未配置', enabled: false, type: 'normal' })
+  } else if (!input.packaged) {
     items.push({ id: 'check', label: '检查更新…', enabled: true, type: 'normal' })
   } else if (input.status.kind === 'checking') {
     items.push({ id: 'check', label: '正在检查更新…', enabled: false, type: 'normal' })

@@ -16,6 +16,7 @@ export interface DshNavigationState {
   readonly canForward: boolean
   readonly canNextChat: boolean
   readonly canPreviousChat: boolean
+  readonly supportedActions: readonly string[]
 }
 
 export interface ShellState extends DshNavigationState {

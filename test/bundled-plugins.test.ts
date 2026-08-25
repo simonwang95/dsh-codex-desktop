@@ -3,17 +3,9 @@ import test from 'node:test'
 
 import { BUNDLED_PLUGINS, OFFICIAL_DSH_VERSION, OFFICIAL_LAUNCH_PEERS, OFFICIAL_RUNTIME, compareReleaseVersions, isDeepSeekOfficialPackage, isOfficialDshPackage, officialDshVersionOverrides, officialRuntimeDependencies, officialRuntimePnpmConfig, planOfficialRuntimeTarget, pnpmAllowBuildsManifest, pnpmWorkspaceYaml, SUITE_PACKAGE, bundledPluginNames, seededPackageNames } from '../src/bundled-plugins.js'
 
-test('内置目录包含六个社区插件和插件市场', () => {
-  assert.deepEqual(bundledPluginNames(), [
-    '@michengai/dsh-codex-ui',
-    '@michengai/dsh-im-connect',
-    '@michengai/dsh-automation',
-    '@michengai/dsh-skills-manager',
-    '@michengai/dsh-archive-manager',
-    '@michengai/dsh-agency-agents',
-    'dshmarket',
-  ])
-  assert.equal(BUNDLED_PLUGINS.length, 7)
+test('默认目录是 core-only，不包含第三方插件或市场', () => {
+  assert.deepEqual(bundledPluginNames(), [])
+  assert.equal(BUNDLED_PLUGINS.length, 0)
   assert.equal(SUITE_PACKAGE, '@michengai/dsh-codex-suite')
 })
 
@@ -24,21 +16,8 @@ test('所有 DeepSeek 官方作用域包使用同一套隔离判定', () => {
   assert.equal(isDeepSeekOfficialPackage('@michengai/dsh-codex-ui'), false)
 })
 
-test('每个内置插件都钉死精确版本', () => {
-  for (const plugin of BUNDLED_PLUGINS) {
-    assert.match(plugin.version, /^\d+\.\d+\.\d+$/)
-    assert.equal(plugin.packageName.startsWith('@michengai/') || plugin.packageName === 'dshmarket', true)
-  }
-  assert.equal(BUNDLED_PLUGINS.find(plugin => plugin.packageName === 'dshmarket')?.version, '1.17.1')
-  assert.deepEqual(Object.fromEntries(BUNDLED_PLUGINS.map(plugin => [plugin.packageName, plugin.version])), {
-    '@michengai/dsh-codex-ui': '0.2.68',
-    '@michengai/dsh-im-connect': '0.1.13',
-    '@michengai/dsh-automation': '0.1.5',
-    '@michengai/dsh-skills-manager': '0.1.23',
-    '@michengai/dsh-archive-manager': '0.1.12',
-    '@michengai/dsh-agency-agents': '0.1.20',
-    dshmarket: '1.17.1',
-  })
+test('首次补种清单只包含官方 DSH', () => {
+  assert.deepEqual(seededPackageNames(), ['@deepseek-ai/dsh'])
 })
 
 test('官方 DSH 家族锁在同一个精确版本', () => {

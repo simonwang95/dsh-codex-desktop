@@ -6,12 +6,33 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { OFFICIAL_DSH_VERSION, OFFICIAL_LAUNCH_PEERS, OFFICIAL_RUNTIME, SUITE_PACKAGE, officialDshVersionOverrides } from '../src/bundled-plugins.js'
-import { applyPendingProfileUpdates, buildSeedPluginArgs, ensureAutoInstallPeersEnabled, isOfficialRuntimeLaunchable, missingOfficialLaunchPeers, officialRuntimeInstallArgs, planBundledPluginSeed, finalizeProfileBundlesAfterInstall, pruneMissingProfileBundles, resolvePnpmStoreDir, seedBundledPlugins, shouldUsePackagedStore, stripOfficialProfileDependencies, writeOfficialRuntimeManifest } from '../src/plugin-seed.js'
+import { applyOfficialRuntimeVersion, applyPendingProfileUpdates, buildSeedPluginArgs, ensureAutoInstallPeersEnabled, isOfficialRuntimeLaunchable, missingOfficialLaunchPeers, officialRuntimeInstallArgs, planBundledPluginSeed, finalizeProfileBundlesAfterInstall, pruneMissingProfileBundles, resolvePnpmStoreDir, seedBundledPlugins, shouldUsePackagedStore, stripOfficialProfileDependencies, writeOfficialRuntimeManifest } from '../src/plugin-seed.js'
+import { currentRuntimeDir, readRuntimeState } from '../src/runtime-manager.js'
 
 const catalog = [
   { packageName: '@michengai/dsh-codex-ui', version: '0.2.58' },
   { packageName: '@michengai/dsh-im-connect', version: '0.1.10' },
 ] as const
+
+async function writeOfficialRuntimeFixture(dir: string, version = OFFICIAL_DSH_VERSION): Promise<void> {
+  const packages = [
+    { packageName: '@deepseek-ai/dsh', version },
+    ...OFFICIAL_LAUNCH_PEERS.map(plugin => ({
+      packageName: plugin.packageName,
+      version: plugin.packageName.startsWith('@deepseek-ai/dsh-') ? version : plugin.version,
+    })),
+    { packageName: '@deepseek-ai/dsh-attachment-local', version },
+    { packageName: '@deepseek-ai/dsh-host-apiproxy', version },
+  ]
+  for (const plugin of packages) {
+    const packageDir = join(dir, 'node_modules', ...plugin.packageName.split('/'))
+    await mkdir(packageDir, { recursive: true })
+    await writeFile(join(packageDir, 'package.json'), JSON.stringify({ name: plugin.packageName, version: plugin.version }), 'utf8')
+  }
+  await mkdir(join(dir, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true })
+  await writeFile(join(dir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), '', 'utf8')
+  writeOfficialRuntimeManifest(dir, version)
+}
 
 test('已安装套件时拆成单独插件，便于各自更新', () => {
   const plan = planBundledPluginSeed({
@@ -51,6 +72,28 @@ test('缺少离线仓库时跳过，不阻断桌面启动', () => {
     storeExists: false,
   })
   assert.deepEqual(plan, { action: 'skip', reason: 'missing-store' })
+})
+
+test('core-only 启动保留存量第三方 Profile 清单和已装版本', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-core-profile-'))
+  try {
+    const profile = join(root, 'profile')
+    const packageDir = join(profile, 'node_modules', '@michengai', 'dsh-codex-ui')
+    await mkdir(packageDir, { recursive: true })
+    const manifest = {
+      dependencies: { '@michengai/dsh-codex-ui': '0.2.61' },
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@michengai/dsh-codex-ui'] } },
+    }
+    await writeFile(join(profile, 'package.json'), `${JSON.stringify(manifest, undefined, 2)}\n`, 'utf8')
+    await writeFile(join(packageDir, 'package.json'), JSON.stringify({ name: '@michengai/dsh-codex-ui', version: '0.2.61', dsh: { bundle: { patch: 'cordis.patch.yml' } } }), 'utf8')
+    const before = await readFile(join(profile, 'package.json'), 'utf8')
+    const result = await seedBundledPlugins({ nodeExecutable: 'node', profileDir: profile, pluginStoreDir: '' })
+    assert.deepEqual(result.seeded, [])
+    assert.equal(await readFile(join(profile, 'package.json'), 'utf8'), before)
+    assert.equal(JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8')).version, '0.2.61')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('只补种缺失插件，并走 profile 内的 pnpm add', () => {
@@ -175,7 +218,7 @@ test('官方运行时缺启动 peer 时判定为不可启动', async () => {
   }
 })
 
-test('官方运行时已装但缺少启动 peer 时会补齐', async () => {
+test('损坏的 legacy 运行时不会被就地修改，会安装版本化候选', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-repair-'))
   try {
     const store = join(root, 'store')
@@ -195,17 +238,14 @@ test('官方运行时已装但缺少启动 peer 时会补齐', async () => {
       catalog: [],
       runner: async args => {
         calls.push([...args])
-        for (const arg of args) {
-          const matched = /^(@[^@]+\/[^@]+)@/.exec(arg)
-          if (matched === null) continue
-          const packageDir = join(runtime, 'node_modules', ...matched[1].split('/'))
-          await mkdir(packageDir, { recursive: true })
-          await writeFile(join(packageDir, 'package.json'), '{}', 'utf8')
-        }
+        const candidate = args.find(arg => arg.startsWith('--dir='))?.slice('--dir='.length)
+        assert.ok(candidate)
+        await writeOfficialRuntimeFixture(candidate)
       },
     })
-    assert.equal(calls.some(item => item.some(arg => arg.includes('@deepseek-ai/cordis-plugin-group@1.0.1'))), true)
-    assert.equal(isOfficialRuntimeLaunchable(runtime), true)
+    assert.equal(calls.some(item => item[0] === 'install'), true)
+    assert.equal(currentRuntimeDir(runtime), join(runtime, 'versions', OFFICIAL_DSH_VERSION))
+    assert.equal(isOfficialRuntimeLaunchable(runtime), false)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -306,20 +346,7 @@ test('复制预装官方运行时成功后不再现场 pnpm add', async () => {
     const prebuilt = join(root, 'prebuilt')
     await mkdir(store)
     await mkdir(profile)
-    await mkdir(join(prebuilt, 'node_modules', '@deepseek-ai', 'dsh', 'lib'), { recursive: true })
-    await writeFile(join(prebuilt, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), '', 'utf8')
-    await writeFile(join(prebuilt, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), JSON.stringify({ version: OFFICIAL_DSH_VERSION }), 'utf8')
-    for (const plugin of OFFICIAL_LAUNCH_PEERS) {
-      const packageDir = join(prebuilt, 'node_modules', ...plugin.packageName.split('/'))
-      await mkdir(packageDir, { recursive: true })
-      await writeFile(join(packageDir, 'package.json'), JSON.stringify({ version: plugin.version }), 'utf8')
-    }
-    for (const name of ['dsh-attachment-local', 'dsh-host-apiproxy']) {
-      const packageDir = join(prebuilt, 'node_modules', '@deepseek-ai', name)
-      await mkdir(packageDir, { recursive: true })
-      await writeFile(join(packageDir, 'package.json'), JSON.stringify({ version: OFFICIAL_DSH_VERSION }), 'utf8')
-    }
-    writeOfficialRuntimeManifest(prebuilt, OFFICIAL_DSH_VERSION)
+    await writeOfficialRuntimeFixture(prebuilt)
     const calls: string[][] = []
     const result = await seedBundledPlugins({
       nodeExecutable: 'node',
@@ -332,7 +359,8 @@ test('复制预装官方运行时成功后不再现场 pnpm add', async () => {
     })
     assert.deepEqual(result.seeded, [OFFICIAL_RUNTIME.packageName])
     assert.equal(calls.length, 0)
-    assert.equal(existsSync(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')), true)
+    assert.equal(existsSync(join(runtime, 'versions', OFFICIAL_DSH_VERSION, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')), true)
+    assert.equal(readRuntimeState(runtime).activationPending, true)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -458,12 +486,18 @@ test('官方 pending 会改运行时目录，不写进 Web profile', async () =>
       profileDir: profile,
       desktopRuntimeDir: runtime,
       pluginStoreDir: join(root, 'store'),
-      runner: async args => { calls.push([...args]) },
+      runner: async args => {
+        calls.push([...args])
+        const candidate = args.find(arg => arg.startsWith('--dir='))?.slice('--dir='.length)
+        assert.ok(candidate)
+        await writeOfficialRuntimeFixture(candidate)
+      },
     })
     assert.deepEqual(updated, [OFFICIAL_DSH_VERSION])
     assert.equal(calls[0]?.[0], 'install')
-    assert.equal(calls[0]?.includes('--dir=' + runtime), true)
-    const manifest = JSON.parse(await readFile(join(runtime, 'package.json'), 'utf8')) as { pnpm?: { overrides?: Record<string, string> } }
+    const candidate = join(runtime, 'versions', OFFICIAL_DSH_VERSION)
+    assert.equal(calls[0]?.some(arg => arg.startsWith('--dir=' + join(runtime, 'versions', `.${OFFICIAL_DSH_VERSION}-`))), true)
+    const manifest = JSON.parse(await readFile(join(candidate, 'package.json'), 'utf8')) as { pnpm?: { overrides?: Record<string, string> } }
     assert.deepEqual(manifest.pnpm?.overrides, officialDshVersionOverrides())
     const profileManifest = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8')) as { dependencies?: Record<string, string> }
     assert.equal(profileManifest.dependencies?.['@deepseek-ai/dsh'], undefined)
@@ -472,7 +506,24 @@ test('官方 pending 会改运行时目录，不写进 Web profile', async () =>
   }
 })
 
-test('官方运行时更新会同步锁文件，避免 CI 冻结锁文件阻断启动', () => {
+test('当前构建仅对其冻结版本生成在线恢复命令', () => {
   const args = officialRuntimeInstallArgs('D:\\runtime')
   assert.equal(args.includes('--no-frozen-lockfile'), true)
+})
+
+test('拒绝安装当前构建没有冻结依赖图的官方运行时版本', async () => {
+  let called = false
+  await assert.rejects(
+    applyOfficialRuntimeVersion({
+      nodeExecutable: 'node',
+      profileDir: 'profile',
+      desktopRuntimeDir: 'runtime',
+      pluginStoreDir: 'store',
+      runner: async () => {
+        called = true
+      },
+    }, '99.0.0'),
+    /不包含 DSH 99\.0\.0 的冻结依赖图/,
+  )
+  assert.equal(called, false)
 })
