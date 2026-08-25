@@ -32,7 +32,7 @@ function Read-ApplicationOutput {
 }
 
 try {
-  $application = Start-Process -FilePath $resolvedApplication -ArgumentList "--user-data-dir=$userDataDir", '--smoke-test' -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+  $application = Start-Process -FilePath $resolvedApplication -WorkingDirectory $tempRoot -ArgumentList "--user-data-dir=$userDataDir", '--smoke-test' -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
   $deadline = (Get-Date).AddSeconds(180)
   $baseUrl = $null
   while ((Get-Date) -lt $deadline -and $null -eq $baseUrl) {

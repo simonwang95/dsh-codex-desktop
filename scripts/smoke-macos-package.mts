@@ -20,6 +20,7 @@ async function main(): Promise<void> {
 
   const tempRoot = await mkdtemp(join(tmpdir(), 'dsh-mac-smoke-'))
   const application = spawn(applicationExecutable, ['--smoke-test', `--user-data-dir=${join(tempRoot, 'user-data')}`], {
+    cwd: tempRoot,
     env: { ...process.env, DSH_HOME: join(tempRoot, 'dsh-home') },
     stdio: ['ignore', 'pipe', 'pipe'],
   })

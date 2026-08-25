@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
 
 export interface RuntimeManifest {
   readonly schemaVersion: 1
@@ -17,10 +16,20 @@ interface ProjectManifest {
 const exactVersion = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
 
 function readProjectManifest(): ProjectManifest {
-  const candidates = [join(process.cwd(), 'package.json'), new URL('../../package.json', import.meta.url)]
-  const path = candidates.find(candidate => existsSync(candidate))
-  if (path === undefined) throw new Error('无法定位包含运行时清单的 package.json。')
-  return JSON.parse(readFileSync(path, 'utf8')) as ProjectManifest
+  // 编译态位于 dist/src，ASAR 内也保持相同层级；desktop-bridge 则位于
+  // Resources/desktop-bridge，需要显式回到相邻的 app.asar。不能依赖 cwd，
+  // LaunchServices、Windows 快捷方式和测试 runner 的工作目录都可能不同。
+  const candidates = [
+    new URL('../../package.json', import.meta.url),
+    new URL('../package.json', import.meta.url),
+    new URL('../app.asar/package.json', import.meta.url),
+  ]
+  for (const path of candidates) {
+    if (!existsSync(path)) continue
+    const project = JSON.parse(readFileSync(path, 'utf8')) as ProjectManifest
+    if (project.config?.runtimeManifest !== undefined) return project
+  }
+  throw new Error('无法定位包含运行时清单的 package.json。')
 }
 
 export function parseRuntimeManifest(value: unknown): RuntimeManifest {

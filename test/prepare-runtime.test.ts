@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { pathToFileURL } from 'node:url'
+import { promisify } from 'node:util'
 
 import { copyWorkspacePackages, officialRuntimeGlobalNodeModulesRoot, officialRuntimeNpmDependencies, officialRuntimeNpmInstallArgs, pruneStoreForPackaging, removePreparedPath, resolveBundledNodeSha256, writePnpmShims } from '../scripts/prepare-runtime.js'
 import { DESKTOP_BRIDGE_FILES } from '../src/desktop-host.js'
+
+const execFileAsync = promisify(execFile)
 
 test('按目标平台选择随包 Node 的 SHA256', () => {
   const checksums = {
@@ -215,11 +219,14 @@ test('桌面装配阶段给 rc.2 权限菜单应用中文补丁，且不包含�
 
 test('Windows 冒烟由应用完成候选验证并要求受控退出', async () => {
   const script = await readFile(new URL('../../scripts/smoke-package.ps1', import.meta.url), 'utf8')
+  const macScript = await readFile(new URL('../../scripts/smoke-macos-package.mts', import.meta.url), 'utf8')
   const main = await readFile(new URL('../../src/main.ts', import.meta.url), 'utf8')
   assert.doesNotMatch(script, /extract-runtime\.mjs/)
   assert.match(script, /--user-data-dir=/)
   assert.match(script, /--smoke-test/)
   assert.match(script, /受控退出/)
+  assert.match(script, /-WorkingDirectory \$tempRoot/)
+  assert.match(macScript, /cwd: tempRoot/)
   assert.match(main, /--user-data-dir=/)
 })
 
@@ -261,11 +268,51 @@ test('desktop-bridge 资源清单包含完整运行依赖闭包', async () => {
 
 test('desktop-bridge 独立目录可以完成 ESM 导入', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-bridge-import-'))
+  const previousVersion = process.env.DSH_BUNDLED_DSH_VERSION
   try {
     for (const file of DESKTOP_BRIDGE_FILES) {
       await copyFile(new URL(`../../dist/src/${file}`, import.meta.url), join(root, file))
     }
+    // Profile 内的 bridge 由 Electron 主进程启动 DSH 时注入冻结版本；
+    // Resources 内的 bridge 则由下面的安装态布局测试覆盖 app.asar 读取。
+    process.env.DSH_BUNDLED_DSH_VERSION = '0.1.1-rc.2'
     await import(`${pathToFileURL(join(root, 'desktop-host.js')).href}?test=${Date.now()}`)
+  } finally {
+    if (previousVersion === undefined) delete process.env.DSH_BUNDLED_DSH_VERSION
+    else process.env.DSH_BUNDLED_DSH_VERSION = previousVersion
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('安装态 desktop-bridge 脱离仓库工作目录仍可读取 app.asar 运行时清单', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-installed-runtime-config-'))
+  try {
+    const resources = join(root, 'DSH Codex Desktop.app', 'Contents', 'Resources')
+    const bridge = join(resources, 'desktop-bridge')
+    const appAsar = join(resources, 'app.asar')
+    const unrelatedWorkingDirectory = join(root, 'launch-services-working-directory')
+    await mkdir(bridge, { recursive: true })
+    await mkdir(appAsar, { recursive: true })
+    await mkdir(unrelatedWorkingDirectory, { recursive: true })
+    await copyFile(new URL('../../dist/src/runtime-config.js', import.meta.url), join(bridge, 'runtime-config.js'))
+    await writeFile(join(appAsar, 'package.json'), JSON.stringify({
+      config: {
+        runtimeManifest: {
+          schemaVersion: 1,
+          dshVersion: '0.1.1-rc.2',
+          nodeVersion: 'v24.19.0',
+          pnpmVersion: '11.22.0',
+        },
+      },
+    }), 'utf8')
+    const { DSH_BUNDLED_DSH_VERSION: _ignored, ...environment } = process.env
+    const moduleUrl = pathToFileURL(join(bridge, 'runtime-config.js')).href
+    const { stdout } = await execFileAsync(process.execPath, [
+      '--input-type=module',
+      '--eval',
+      `const runtime = await import(${JSON.stringify(moduleUrl)}); process.stdout.write(runtime.OFFICIAL_DSH_VERSION);`,
+    ], { cwd: unrelatedWorkingDirectory, env: environment })
+    assert.equal(stdout, '0.1.1-rc.2')
   } finally {
     await rm(root, { recursive: true, force: true })
   }
