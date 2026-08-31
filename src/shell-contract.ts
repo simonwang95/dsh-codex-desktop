@@ -20,6 +20,7 @@ export interface DshNavigationState {
 }
 
 export interface ShellState extends DshNavigationState {
+  readonly browserAutomationEnabled: boolean
   readonly fullscreen: boolean
   readonly reloading: boolean
   readonly zoomPercent: number

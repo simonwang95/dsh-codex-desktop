@@ -1,0 +1,8 @@
+{
+  "name": "dsh-browser-runtime-lock",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@playwright/mcp": "0.0.79"
+  }
+}

@@ -246,8 +246,10 @@ import { join } from 'node:path'
 
 export const DESKTOP_BRIDGE_FILES = [
   'desktop-bridge.mjs',
+  'desktop-browser.mjs',
   'desktop-bridge-client-source.js',
   'atomic-file.js',
+  'browser-automation.js',
   'desktop-host.js',
   'bundled-plugins.js',
   'dsh-process.js',

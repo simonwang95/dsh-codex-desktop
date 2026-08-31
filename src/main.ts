@@ -29,6 +29,14 @@ import updater from 'electron-updater'
 import { buildDesktopTrayItems, desktopUpdateChannel, desktopUpdatePrompt, formatDesktopReleaseNotes, publicDesktopUpdateError, type DesktopUpdateStatus } from './desktop-updater.js'
 import { resolveProductConfig, type ProductConfig } from './product-config.js'
 import { activateRuntime, currentRuntimeDir, currentRuntimeVersion, markCurrentRuntimeHealthy, readRuntimeState, rollbackPendingActivation, rollbackRuntime } from './runtime-manager.js'
+import {
+  browserAutomationRuntimeAvailable,
+  readBrowserAutomationSettings,
+  resolveBrowserAutomationRuntime,
+  withBrowserAutomationEnvironment,
+  writeBrowserAutomationSettings,
+  type BrowserAutomationRuntime,
+} from './browser-automation.js'
 
 interface DshProcessModule {
   isApplyPluginUpdatesIpc: (message: unknown) => boolean
@@ -54,6 +62,8 @@ let profileWatcher: { stop: () => void; sync: () => void } | undefined
 let updateStatus: DesktopUpdateStatus = { kind: 'idle' }
 let productConfig: ProductConfig = {}
 let activeRuntimeVersion = OFFICIAL_DSH_VERSION
+let browserAutomationEnabled = false
+let browserAutomationRuntime: BrowserAutomationRuntime | undefined
 const { autoUpdater } = updater
 let isReportingUnexpectedError = false
 const windowNavigation = new WindowNavigationCoordinator()
@@ -193,13 +203,26 @@ async function startApplication(): Promise<void> {
     const activeRuntimeDir = currentRuntimeDir(desktopRuntimeDir)
     if (activeRuntimeDir === undefined) throw new Error('没有可启动的 current DSH 运行时。')
     activeRuntimeVersion = currentRuntimeVersion(desktopRuntimeDir) ?? OFFICIAL_DSH_VERSION
+    browserAutomationRuntime = resolveBrowserAutomationRuntime({
+      activeRuntimeDir,
+      appPath: app.getAppPath(),
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      userDataDir: app.getPath('userData'),
+    })
+    const browserSettings = await readBrowserAutomationSettings(app.getPath('userData'))
+    browserAutomationEnabled = browserSettings.enabled && browserAutomationRuntimeAvailable(browserAutomationRuntime)
+    if (browserSettings.enabled && !browserAutomationEnabled) {
+      console.error(`浏览器自动化运行时缺失：${browserAutomationRuntime.mcpEntry}`)
+      await writeBrowserAutomationSettings(app.getPath('userData'), false)
+    }
     const runtime = resolveDshRuntime({ ...runtimeOptions, profileDir, desktopRuntimeDir: activeRuntimeDir })
     let startOptions: Omit<StartDshOptions, 'onUnexpectedExit' | 'onIpcMessage'> = {
       bootstrapPath: resolveDshBootstrap(runtimeOptions),
       ...(pathPrefix === undefined ? {} : { pathPrefix }),
       runtime,
       nodeExecutable,
-      environment: {
+      environment: withBrowserAutomationEnvironment({
         DSH_HOME: resolve(profileDir, '..', '..'),
         DSH_PROFILE_DIR: profileDir,
         DSH_PROFILE_NAME: 'web',
@@ -207,7 +230,7 @@ async function startApplication(): Promise<void> {
         DSH_BUNDLED_DSH_VERSION: OFFICIAL_DSH_VERSION,
         ...(pnpmEntry === undefined ? {} : { DSH_PNPM_ENTRY: pnpmEntry }),
         ...(profileStoreDir === undefined ? {} : { DSH_PNPM_STORE_DIR: profileStoreDir }),
-      },
+      }, browserAutomationRuntime, browserAutomationEnabled),
     }
     const managed = await startManagedRuntime(startOptions, seedOptions)
     startOptions = managed.startOptions
@@ -222,8 +245,9 @@ async function startApplication(): Promise<void> {
     }, { onError: handleUnexpectedMainError })
     await createMainWindow(server.url)
     if (process.argv.includes('--smoke-test')) {
+      console.log(`DSH_SMOKE_BROWSER enabled=${browserAutomationEnabled} runtime=${browserAutomationRuntime !== undefined && browserAutomationRuntimeAvailable(browserAutomationRuntime)}`)
       console.log(`DSH_SMOKE_READY ${server.url}`)
-      setTimeout(() => { runMainTask(requestQuit()) }, 5_000).unref?.()
+      setTimeout(() => { runMainTask(requestQuit()) }, 15_000).unref?.()
     }
   } catch (error) {
     await reportStartupFailure(error)
@@ -276,6 +300,9 @@ async function startManagedRuntime(
     if (activeDir === undefined) throw new Error('current DSH 运行时不可启动。')
     return {
       ...baseStartOptions,
+      environment: baseStartOptions.environment === undefined
+        ? { DSH_ACTIVE_RUNTIME_DIR: activeDir }
+        : { ...baseStartOptions.environment, DSH_ACTIVE_RUNTIME_DIR: activeDir },
       runtime: resolveDshRuntime({
         appPath: app.getAppPath(),
         isPackaged: app.isPackaged,
@@ -573,6 +600,7 @@ function currentShellState(): ShellState {
   const zoomFactor = dshView?.webContents.getZoomFactor() ?? 1
   return {
     ...dshNavigationState,
+    browserAutomationEnabled,
     fullscreen: window?.isFullScreen() ?? false,
     reloading: isRecycling,
     zoomPercent: Math.round(zoomFactor * 100),
@@ -673,6 +701,7 @@ function popupShellMenu(request: ShellMenuPopupRequest): void {
     template.push({
       label: action.label,
       enabled: isActionEnabled(action.id),
+      ...(action.id === 'browser-automation' ? { type: 'checkbox', checked: browserAutomationEnabled } as const : {}),
       ...(action.acceleratorLabel === undefined ? {} : { accelerator: action.acceleratorLabel }),
       click: () => { runMainTask(Promise.resolve(executeShellAction(action.id))) },
     })
@@ -712,6 +741,7 @@ async function executeShellAction(id: ShellActionId): Promise<void> {
   }
   if (id === 'close-window') { mainWindow?.hide(); return }
   if (id === 'quit') { await requestQuit(); return }
+  if (id === 'browser-automation') { await toggleBrowserAutomation(); return }
   if (contents === undefined) return
   if (id === 'undo') contents.undo()
   else if (id === 'redo') contents.redo()
@@ -731,6 +761,47 @@ async function executeShellAction(id: ShellActionId): Promise<void> {
   else if (id === 'feedback' && productConfig.feedbackUrl !== undefined) await shell.openExternal(productConfig.feedbackUrl)
   else if (id === 'about') showAboutWindow()
   broadcastShellState()
+}
+
+async function toggleBrowserAutomation(): Promise<void> {
+  const runtime = browserAutomationRuntime
+  if (runtime === undefined || lastStartOptions === undefined) return
+  const chinese = isChineseLocale(app.getLocale())
+  const enabling = !browserAutomationEnabled
+  if (enabling && !browserAutomationRuntimeAvailable(runtime)) {
+    await dialog.showMessageBox({
+      type: 'error',
+      title: DESKTOP_APP_NAME,
+      message: chinese ? '浏览器自动化运行时缺失，无法启用。' : 'The browser automation runtime is missing and cannot be enabled.',
+      detail: runtime.mcpEntry,
+      buttons: [chinese ? '好' : 'OK'],
+    })
+    return
+  }
+  const prompt = await dialog.showMessageBox({
+    type: enabling ? 'warning' : 'question',
+    title: chinese ? '浏览器自动化' : 'Browser Automation',
+    message: enabling
+      ? (chinese ? '允许 DSH 操控系统 Chrome 浏览器？' : 'Allow DSH to control the system Chrome browser?')
+      : (chinese ? '关闭浏览器自动化？' : 'Disable browser automation?'),
+    detail: enabling
+      ? (chinese
+          ? '每个会话使用独立的 Chrome 用户目录，不读取你日常 Chrome 的登录配置。网页提交、文件上传、执行页面代码等高风险操作会再次请求授权。DSH 将重新加载。'
+          : 'Each session uses a separate Chrome profile and never reads your daily Chrome sign-in profile. High-risk actions such as form submission, file upload, and page-code execution require another approval. DSH will reload.')
+      : (chinese ? '当前浏览器进程将随 DSH 重新加载而关闭；会话专用配置会保留，便于再次启用。' : 'Current browser processes will close when DSH reloads. Session-specific profiles are retained for later use.'),
+    buttons: [enabling ? (chinese ? '启用并重新加载' : 'Enable and Reload') : (chinese ? '关闭并重新加载' : 'Disable and Reload'), chinese ? '取消' : 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+  })
+  if (prompt.response !== 0) return
+  await writeBrowserAutomationSettings(app.getPath('userData'), enabling)
+  browserAutomationEnabled = enabling
+  lastStartOptions = {
+    ...lastStartOptions,
+    environment: withBrowserAutomationEnvironment(lastStartOptions.environment ?? {}, runtime, enabling),
+  }
+  broadcastShellState()
+  await recycleDshForPluginUpdate()
 }
 
 function showShortcutsWindow(): void {

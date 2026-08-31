@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -19,7 +19,12 @@ async function main(): Promise<void> {
   if (!existsSync(applicationExecutable)) throw new Error(`未找到 macOS 应用可执行文件：${applicationExecutable}`)
 
   const tempRoot = await mkdtemp(join(tmpdir(), 'dsh-mac-smoke-'))
-  const application = spawn(applicationExecutable, ['--smoke-test', `--user-data-dir=${join(tempRoot, 'user-data')}`], {
+  const userDataDir = join(tempRoot, 'user-data')
+  if (process.argv.includes('--browser-enabled')) {
+    await mkdir(userDataDir, { recursive: true })
+    await writeFile(join(userDataDir, 'browser-automation.json'), '{\n  "enabled": true,\n  "schemaVersion": 1\n}\n', 'utf8')
+  }
+  const application = spawn(applicationExecutable, ['--smoke-test', `--user-data-dir=${userDataDir}`], {
     cwd: tempRoot,
     env: { ...process.env, DSH_HOME: join(tempRoot, 'dsh-home') },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -35,12 +40,12 @@ async function main(): Promise<void> {
   try {
     const baseUrl = await waitForHealthyServer(application, () => applicationOutput)
     bootstrapProcessId = await findBootstrapProcessId(application.pid)
-    const page = await fetch(`${baseUrl}/`)
+    const page = await fetchHealthy(new URL('/', baseUrl).href)
     if (page.status !== 200) throw new Error(`根页面返回 HTTP ${page.status}。`)
     const content = await page.text()
     const assetPath = /(?:src|href)=["'](?<path>\/[^"']+\.(?:js|css))/.exec(content)?.groups?.path
     if (!assetPath) throw new Error('根页面未找到可验证的前端资源。')
-    const asset = await fetch(baseUrl + assetPath)
+    const asset = await fetchHealthy(new URL(assetPath, baseUrl).href)
     if (asset.status !== 200) throw new Error(`前端资源返回 HTTP ${asset.status}。`)
     await waitForControlledExit(application)
     console.log(`SMOKE_OK application=${applicationBundle} health=${baseUrl} controlledExit=true`)
@@ -74,6 +79,8 @@ async function waitForHealthyServer(application: ChildProcess, getApplicationOut
     if (application.exitCode !== null) {
       throw new Error(`打包应用提前退出（退出码 ${application.exitCode}）。${getApplicationOutput()}`)
     }
+    const announcedUrl = /DSH_SMOKE_READY\s+(http:\/\/127\.0\.0\.1:\d+\/?)/.exec(getApplicationOutput())?.[1]
+    if (announcedUrl !== undefined) return announcedUrl
     const bootstrapProcessId = await findBootstrapProcessId(application.pid)
     if (bootstrapProcessId !== undefined) {
       const port = await findListeningPort(bootstrapProcessId)
@@ -128,6 +135,23 @@ function isProcessRunning(processId: number): boolean {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, milliseconds))
+}
+
+async function fetchHealthy(url: string): Promise<Response> {
+  const deadline = Date.now() + 5_000
+  let lastStatus: number | undefined
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url)
+      lastStatus = response.status
+      if (response.status === 200) return response
+      await response.body?.cancel()
+    } catch {
+      // DSH may announce the bound port just before the HTTP server accepts requests.
+    }
+    await delay(100)
+  }
+  throw new Error(`HTTP 健康检查未返回 200（最后状态 ${lastStatus ?? '连接失败'}）：${url}`)
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === import.meta.filename) await main()

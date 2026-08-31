@@ -12,6 +12,7 @@ async function main(): Promise<void> {
   const dmg = resolve(readArgument('--dmg'))
   const zip = resolve(readArgument('--zip'))
   const evidence = optionalArgument('--evidence')
+  const browserEnabled = process.argv.includes('--browser-enabled')
   for (const path of [dmg, zip]) if (!existsSync(path)) throw new Error(`制品不存在：${path}`)
   const root = await mkdtemp(join(tmpdir(), 'dsh-mac-artifacts-'))
   const results: string[] = []
@@ -25,7 +26,8 @@ async function main(): Promise<void> {
       const copiedApp = join(dmgInstall, basename(mountedApp))
       await execFileAsync('ditto', [mountedApp, copiedApp])
       results.push(`DMG_COPY_OK source=${basename(dmg)} app=${copiedApp}`)
-      results.push((await smoke(copiedApp)).trim())
+      results.push((await smoke(copiedApp, browserEnabled)).trim())
+      if (browserEnabled) results.push((await smokeBrowser(copiedApp)).trim())
     } finally {
       await execFileAsync('hdiutil', ['detach', mount])
     }
@@ -35,10 +37,11 @@ async function main(): Promise<void> {
     await execFileAsync('ditto', ['-x', '-k', zip, zipInstall])
     const zippedApp = await findApplication(zipInstall)
     results.push(`ZIP_EXTRACT_OK source=${basename(zip)} app=${zippedApp}`)
-    results.push((await smoke(zippedApp)).trim())
+    results.push((await smoke(zippedApp, browserEnabled)).trim())
+    if (browserEnabled) results.push((await smokeBrowser(zippedApp)).trim())
     const os = (await execFileAsync('sw_vers', ['-productVersion'])).stdout.trim()
     results.unshift(`RUNNER macOS=${os} arch=${process.arch}`)
-    results.push('MACOS_ARTIFACT_SMOKE_OK dmg=true zip=true controlledExit=true')
+    results.push(`MACOS_ARTIFACT_SMOKE_OK dmg=true zip=true controlledExit=true browser=${browserEnabled}`)
     const report = `${results.join('\n')}\n`
     process.stdout.write(report)
     if (evidence !== undefined) await writeFile(resolve(evidence), report, 'utf8')
@@ -47,9 +50,14 @@ async function main(): Promise<void> {
   }
 }
 
-async function smoke(applicationPath: string): Promise<string> {
+async function smoke(applicationPath: string, browserEnabled: boolean): Promise<string> {
   const script = join(import.meta.dirname, 'smoke-macos-package.mjs')
-  return (await execFileAsync(process.execPath, [script, '--application-path', applicationPath], { maxBuffer: 4 * 1024 * 1024 })).stdout
+  return (await execFileAsync(process.execPath, [script, ...(browserEnabled ? ['--browser-enabled'] : []), '--application-path', applicationPath], { maxBuffer: 4 * 1024 * 1024 })).stdout
+}
+
+async function smokeBrowser(applicationPath: string): Promise<string> {
+  const script = join(import.meta.dirname, 'smoke-browser-automation.mjs')
+  return (await execFileAsync(process.execPath, [script, '--workspace', process.cwd(), '--application-path', applicationPath], { maxBuffer: 4 * 1024 * 1024 })).stdout
 }
 
 async function findApplication(root: string): Promise<string> {

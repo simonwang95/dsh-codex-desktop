@@ -2,6 +2,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { createDesktopHostServices } from './desktop-host.js'
+import { installDesktopBrowserAutomation } from './desktop-browser.mjs'
 
 export const name = 'dsh-desktop-bridge'
 
@@ -12,7 +13,7 @@ interface CordisLike {
 }
 
 /** 向 DSH 提供官方桌面契约，让插件市场走随包 pnpm，并由桌面端负责热更新。 */
-export function apply(ctx: CordisLike): void {
+export async function apply(ctx: CordisLike): Promise<void> {
   const profileDir = process.env.DSH_PROFILE_DIR ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles', 'web')
   const host = createDesktopHostServices({
     profileName: process.env.DSH_PROFILE_NAME ?? 'web',
@@ -30,4 +31,5 @@ export function apply(ctx: CordisLike): void {
   }
   ctx.desktopProfiles = host.desktopProfiles
   ctx.desktopPnpm = host.desktopPnpm
+  await installDesktopBrowserAutomation(ctx as never)
 }

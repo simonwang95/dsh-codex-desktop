@@ -13,6 +13,7 @@ test('桌面壳菜单和动作随系统语言本地化', () => {
   assert.deepEqual(localizedShellMenus('en-US').map(menu => menu.label), ['File', 'Edit', 'View', 'Help'])
   assert.equal(localizedShellActions('zh-CN', 'win32').find(action => action.id === 'reload')?.label, '重新加载')
   assert.equal(localizedShellActions('zh-CN', 'win32').find(action => action.id === 'quit')?.label, '退出')
+  assert.equal(localizedShellActions('zh-CN', 'darwin').find(action => action.id === 'browser-automation')?.label, '浏览器自动化…')
   assert.equal(localizedShellActions('en-US', 'darwin').find(action => action.id === 'show-shortcuts')?.acceleratorLabel, 'Cmd+/')
   assert.equal(localizedShellActions('zh-CN', 'darwin').find(action => action.id === 'redo')?.acceleratorLabel, 'Cmd+Shift+Z')
 })

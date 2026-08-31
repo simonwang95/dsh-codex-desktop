@@ -47,7 +47,11 @@ jobs:
 
       - name: 未安装目录启动冒烟
         shell: pwsh
-        run: .\scripts\smoke-package.ps1 -ApplicationPath 'release\win-unpacked\DSH Codex Desktop.exe'
+        run: .\scripts\smoke-package.ps1 -ApplicationPath 'release\win-unpacked\DSH Codex Desktop.exe' -BrowserEnabled
+
+      - name: 未安装目录系统 Chrome 与会话隔离冒烟
+        shell: pwsh
+        run: node dist/scripts/smoke-browser-automation.mjs --workspace "$PWD" --application-path 'release\win-unpacked\DSH Codex Desktop.exe'
 
       - name: ZIP、NSIS 安装启动卸载与 Profile 保留冒烟
         shell: pwsh

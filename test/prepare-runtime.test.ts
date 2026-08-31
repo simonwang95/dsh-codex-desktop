@@ -145,6 +145,28 @@ test('打包配置把预装官方运行时放到 extraResources', async () => {
   )
 })
 
+test('打包配置包含固定版本的离线浏览器 MCP，且不内置浏览器二进制', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as {
+    config?: { browserRuntime?: { browser?: string; mcpVersion?: string } }
+    build?: { extraResources?: { from?: string; to?: string }[] }
+  }
+  const lock = JSON.parse(await readFile(new URL('../../browser-runtime-lock/package.json', import.meta.url), 'utf8')) as {
+    dependencies?: Record<string, string>
+  }
+  assert.deepEqual(manifest.config?.browserRuntime, { browser: 'chrome', mcpVersion: '0.0.79' })
+  assert.equal(lock.dependencies?.['@playwright/mcp'], '0.0.79')
+  assert.equal(
+    manifest.build?.extraResources?.some(item => item.from === 'runtime-browser' && item.to === 'browser-runtime'),
+    true,
+  )
+  for (const dependency of ['@playwright/mcp', 'playwright', 'playwright-core']) {
+    assert.equal(
+      manifest.build?.extraResources?.some(item => item.from === `runtime-browser/node_modules/${dependency}` && item.to === `browser-runtime/node_modules/${dependency}`),
+      true,
+    )
+  }
+})
+
 test('清理运行时目录必须可重试，避免 Windows ENOTEMPTY', async () => {
   const source = await readFile(new URL('../../scripts/prepare-runtime.ts', import.meta.url), 'utf8')
   assert.match(source, /export async function removePreparedPath/)
@@ -174,6 +196,8 @@ test('打包配置显式映射完整编译产物', async () => {
 test('Windows 冒烟检查使用实际产品可执行文件名', async () => {
   const workflow = await readFile(new URL('../../.github/workflows/desktop-package.yml', import.meta.url), 'utf8')
   assert.match(workflow, /release\\win-unpacked\\DSH Codex Desktop\.exe/)
+  assert.match(workflow, /smoke-browser-automation\.mjs --workspace/)
+  assert.match(workflow, /-BrowserEnabled/)
 })
 
 test('官方运行时使用冻结 lock 和 npm ci 装配', () => {
@@ -224,6 +248,7 @@ test('Windows 冒烟由应用完成候选验证并要求受控退出', async () 
   assert.doesNotMatch(script, /extract-runtime\.mjs/)
   assert.match(script, /--user-data-dir=/)
   assert.match(script, /--smoke-test/)
+  assert.match(main, /DSH_SMOKE_BROWSER enabled=/)
   assert.match(script, /受控退出/)
   assert.match(script, /-WorkingDirectory \$tempRoot/)
   assert.match(macScript, /cwd: tempRoot/)

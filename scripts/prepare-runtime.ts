@@ -10,11 +10,14 @@ import { OFFICIAL_RUNTIME, officialRuntimeDependencies } from '../src/bundled-pl
 import { extractTarGz, packDirectoryToTarGz, writeFileSha256 } from '../src/runtime-archive.js'
 import { assertProjectToolchainMatchesRuntimeManifest, runtimeManifest } from '../src/runtime-config.js'
 import { validateRuntimeCandidate } from '../src/runtime-manager.js'
+import { BROWSER_MCP_VERSION } from '../src/browser-automation.js'
 
 const projectRoot = resolve(import.meta.dirname, '..', '..')
 const nodeRoot = join(projectRoot, 'runtime-node')
 const officialRuntimeRoot = join(projectRoot, 'runtime-dsh')
 const runtimeLockRoot = join(projectRoot, 'runtime-lock')
+const browserRuntimeLockRoot = join(projectRoot, 'browser-runtime-lock')
+const browserRuntimeRoot = join(projectRoot, 'runtime-browser')
 const bundledPnpmVersion = runtimeManifest().pnpmVersion
 const OFFICIAL_RUNTIME_PATCHES: Readonly<Record<string, string>> = {
   '0.1.1-rc.2': join(projectRoot, 'patches', 'dsh-0.1.1-rc.2-permission-localization.patch'),
@@ -49,9 +52,12 @@ export function resolveBundledNodeSha256(checksums: unknown, platform = process.
 
 async function main(): Promise<void> {
   const projectManifest = JSON.parse(await readFile(join(projectRoot, 'package.json'), 'utf8')) as {
-    config?: { bundledNodeSha256?: unknown, runtimeManifest?: unknown }
+    config?: { browserRuntime?: { browser?: unknown, mcpVersion?: unknown }, bundledNodeSha256?: unknown, runtimeManifest?: unknown }
   }
   assertProjectToolchainMatchesRuntimeManifest(projectManifest)
+  if (projectManifest.config?.browserRuntime?.mcpVersion !== BROWSER_MCP_VERSION || projectManifest.config.browserRuntime.browser !== 'chrome') {
+    throw new Error('package.json 浏览器运行时配置与固定版本事实源不一致。')
+  }
   const expectedNodeVersion = runtimeManifest().nodeVersion
   const expectedNodeSha256 = resolveBundledNodeSha256(projectManifest.config?.bundledNodeSha256)
 
@@ -60,7 +66,7 @@ async function main(): Promise<void> {
     throw new Error('随包 Node 版本不匹配：需要 ' + expectedNodeVersion + '，实际 ' + process.version + '。')
   }
   const officialArchive = join(projectRoot, 'runtime-dsh.tgz')
-  for (const target of [nodeRoot, officialRuntimeRoot, officialArchive]) {
+  for (const target of [nodeRoot, browserRuntimeRoot, officialRuntimeRoot, officialArchive]) {
     if (!target.startsWith(projectRoot + sep)) throw new Error(`拒绝清理项目外路径：${target}`)
     await removePreparedPath(target)
   }
@@ -73,14 +79,41 @@ async function main(): Promise<void> {
   await cp(nodeExecutable, stagedNodeExecutable)
   await writeFile(`${stagedNodeExecutable}.sha256`, nodeSha256 + '\n', 'utf8')
   await stagePnpm(nodeRoot)
+  await stageBrowserRuntime(browserRuntimeRoot)
   await stageOfficialRuntime(officialRuntimeRoot)
   applyOfficialRuntimePatch(officialRuntimeRoot)
   await validateRuntimeCandidate(officialRuntimeRoot, runtimeManifest().dshVersion)
   packDirectoryToTarGz(officialRuntimeRoot, join(projectRoot, 'runtime-dsh.tgz'))
   writeFileSha256(join(projectRoot, 'runtime-dsh.tgz'))
   console.log(`已装配 Node 运行时：${nodeRoot}`)
+  console.log(`已装配系统 Chrome 自动化运行时：${browserRuntimeRoot}`)
   console.log('默认发行模式：core-only（未装配第三方插件仓库）')
   console.log(`已装配预装官方运行时：${join(projectRoot, 'runtime-dsh.tgz')}`)
+}
+
+/** 只预装 Playwright MCP JS 依赖；浏览器本体固定使用目标机器的系统 Chrome。 */
+export async function stageBrowserRuntime(destinationRoot: string): Promise<void> {
+  if (!destinationRoot.startsWith(projectRoot + sep)) throw new Error(`拒绝写入项目外路径：${destinationRoot}`)
+  await removePreparedPath(destinationRoot)
+  await mkdir(destinationRoot, { recursive: true })
+  const lockManifest = JSON.parse(await readFile(join(browserRuntimeLockRoot, 'package.json'), 'utf8')) as { dependencies?: Record<string, string> }
+  if (lockManifest.dependencies?.['@playwright/mcp'] !== BROWSER_MCP_VERSION) {
+    throw new Error('browser-runtime-lock/package.json 与浏览器 MCP 固定版本不一致。')
+  }
+  await cp(join(browserRuntimeLockRoot, 'package.json'), join(destinationRoot, 'package.json'))
+  await cp(join(browserRuntimeLockRoot, 'package-lock.json'), join(destinationRoot, 'package-lock.json'))
+  runCurrentNpm([
+    'ci',
+    '--prefix=' + destinationRoot,
+    '--omit=dev',
+    '--no-audit',
+    '--no-fund',
+  ], { PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' })
+  const packageRoot = join(destinationRoot, 'node_modules', '@playwright', 'mcp')
+  const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as { version?: unknown }
+  if (manifest.version !== BROWSER_MCP_VERSION || !existsSync(join(packageRoot, 'cli.js'))) {
+    throw new Error('预装浏览器 MCP 后版本或入口无效。')
+  }
 }
 
 async function copyWorkspacePackage(sourcePackage: string, destinationPackage: string): Promise<void> {
@@ -297,14 +330,18 @@ function runStagedPnpm(nodeRoot: string, args: readonly string[]): void {
   if (result.status !== 0) throw new Error(`随包 pnpm 执行失败（退出码 ${result.status ?? '未知'}）。`)
 }
 
-function runCurrentNpm(args: readonly string[]): void {
+function runCurrentNpm(args: readonly string[], extraEnvironment: NodeJS.ProcessEnv = {}): void {
   const entry = [
     process.env.DSH_NPM_ENTRY,
     join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
     join(dirname(dirname(process.execPath)), 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
   ].find((path): path is string => path !== undefined && existsSync(path))
   if (entry === undefined) throw new Error('未找到当前 Node 附带的 npm CLI。')
-  const result = spawnSync(process.execPath, [entry, ...args], { stdio: 'inherit', windowsHide: true })
+  const result = spawnSync(process.execPath, [entry, ...args], {
+    env: { ...process.env, ...extraEnvironment },
+    stdio: 'inherit',
+    windowsHide: true,
+  })
   if (result.status !== 0) throw new Error(`npm ${args[0]} 失败（退出码 ${result.status ?? '未知'}）。`)
 }
 

@@ -21,8 +21,11 @@ $appData = Join-Path $smokeHome 'AppData\Roaming'
 $localAppData = Join-Path $smokeHome 'AppData\Local'
 $zipDir = Join-Path $root 'zip'
 $installDir = Join-Path $root 'installed'
+$projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$browserSmokeScript = Join-Path $projectRoot 'dist\scripts\smoke-browser-automation.mjs'
 New-Item -ItemType Directory -Path $dshProfile, $appData, $localAppData, $zipDir, $installDir -Force | Out-Null
 Set-Content -LiteralPath $sentinel -Value 'I004_PROFILE_MUST_SURVIVE_UNINSTALL' -Encoding UTF8
+if (-not (Test-Path -LiteralPath $browserSmokeScript -PathType Leaf)) { throw "缺少 Windows Chrome 冒烟脚本：$browserSmokeScript" }
 
 $previous = @{
   USERPROFILE = $env:USERPROFILE
@@ -47,7 +50,9 @@ try {
   if ([string]::IsNullOrWhiteSpace($zipApplication)) { throw 'ZIP 解压后未找到应用可执行文件。' }
   $zipApplicationSignature = Get-AuthenticodeSignature -FilePath $zipApplication
   if ($zipApplicationSignature.Status.ToString() -ne 'NotSigned') { throw "ZIP 应用不应带 Authenticode 签名：$($zipApplicationSignature.Status)" }
-  & "$PSScriptRoot\smoke-package.ps1" -ApplicationPath $zipApplication
+  & "$PSScriptRoot\smoke-package.ps1" -ApplicationPath $zipApplication -BrowserEnabled
+  & node $browserSmokeScript --workspace $projectRoot --application-path $zipApplication
+  if (-not $?) { throw 'ZIP 系统 Chrome 浏览器冒烟失败。' }
 
   $installer = Start-Process -FilePath $nsis -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
   if ($installer.ExitCode -ne 0) { throw "NSIS 安装失败：$($installer.ExitCode)" }
@@ -55,7 +60,9 @@ try {
   if (-not (Test-Path -LiteralPath $installedApplication -PathType Leaf)) { throw 'NSIS 安装后未找到应用可执行文件。' }
   $installedApplicationSignature = Get-AuthenticodeSignature -FilePath $installedApplication
   if ($installedApplicationSignature.Status.ToString() -ne 'NotSigned') { throw "安装后应用不应带 Authenticode 签名：$($installedApplicationSignature.Status)" }
-  & "$PSScriptRoot\smoke-package.ps1" -ApplicationPath $installedApplication
+  & "$PSScriptRoot\smoke-package.ps1" -ApplicationPath $installedApplication -BrowserEnabled
+  & node $browserSmokeScript --workspace $projectRoot --application-path $installedApplication
+  if (-not $?) { throw 'NSIS 安装态系统 Chrome 浏览器冒烟失败。' }
 
   $uninstaller = Get-ChildItem -LiteralPath $installDir -File -Filter 'Uninstall*.exe' | Select-Object -First 1 -ExpandProperty FullName
   if ([string]::IsNullOrWhiteSpace($uninstaller)) { throw 'NSIS 安装后未找到卸载器。' }
@@ -69,11 +76,12 @@ try {
     "RUNNER windows=$($os.Caption) version=$($os.Version) arch=$env:PROCESSOR_ARCHITECTURE",
     "ZIP_EXTRACT_START_OK file=$([System.IO.Path]::GetFileName($zip)) controlledExit=true",
     "NSIS_INSTALL_START_UNINSTALL_OK file=$([System.IO.Path]::GetFileName($nsis)) controlledExit=true",
+    'SYSTEM_CHROME_OK zip=true installed=true workspaceWrite=true workspaceUpload=true profileIsolation=true restartPersistence=true processCleanup=true',
     'PROFILE_SENTINEL_OK path=isolated-home/.dsh/i004-profile-sentinel.txt preservedAfterUninstall=true',
     'SIGNING_DISABLED nsis=NotSigned zipApplication=NotSigned installedApplication=NotSigned',
     "ARTIFACT file=$([System.IO.Path]::GetFileName($nsis)) bytes=$((Get-Item -LiteralPath $nsis).Length) sha256=$((Get-FileHash -LiteralPath $nsis -Algorithm SHA256).Hash.ToLowerInvariant())",
     "ARTIFACT file=$([System.IO.Path]::GetFileName($zip)) bytes=$((Get-Item -LiteralPath $zip).Length) sha256=$((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant())",
-    'WINDOWS_ARTIFACT_SMOKE_OK nsis=true zip=true uninstall=true profilePreserved=true'
+    'WINDOWS_ARTIFACT_SMOKE_OK nsis=true zip=true uninstall=true profilePreserved=true browser=true'
   )
   $evidenceDir = Split-Path -Parent $evidence
   New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null

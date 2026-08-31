@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)]
-  [string]$ApplicationPath
+  [string]$ApplicationPath,
+  [switch]$BrowserEnabled
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -11,12 +12,28 @@ $ErrorActionPreference = 'Stop'
 $resolvedApplication = (Resolve-Path -LiteralPath $ApplicationPath).Path
 $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $tempRoot = Join-Path $tempBase ("dsh-desktop-smoke-$([guid]::NewGuid().ToString('N'))")
-$userDataDir = Join-Path $tempRoot 'user-data'
+$smokeHome = Join-Path $tempRoot 'home'
+$appData = Join-Path $smokeHome 'AppData\Roaming'
+$localAppData = Join-Path $smokeHome 'AppData\Local'
+$userDataDir = Join-Path $appData 'DSH Codex Desktop'
 $dshHome = Join-Path $tempRoot 'dsh-home'
 $stdoutPath = Join-Path $tempRoot 'application.stdout.log'
 $stderrPath = Join-Path $tempRoot 'application.stderr.log'
-New-Item -ItemType Directory -Path $userDataDir, $dshHome -Force | Out-Null
-$previousDshHome = $env:DSH_HOME
+New-Item -ItemType Directory -Path $userDataDir, $localAppData, $dshHome -Force | Out-Null
+if ($BrowserEnabled) {
+  Set-Content -LiteralPath (Join-Path $userDataDir 'browser-automation.json') -Value "{`n  `"enabled`": true,`n  `"schemaVersion`": 1`n}" -Encoding UTF8
+}
+$previous = @{
+  USERPROFILE = $env:USERPROFILE
+  HOME = $env:HOME
+  APPDATA = $env:APPDATA
+  LOCALAPPDATA = $env:LOCALAPPDATA
+  DSH_HOME = $env:DSH_HOME
+}
+$env:USERPROFILE = $smokeHome
+$env:HOME = $smokeHome
+$env:APPDATA = $appData
+$env:LOCALAPPDATA = $localAppData
 $env:DSH_HOME = $dshHome
 $application = $null
 $bootstrapProcessId = $null
@@ -32,7 +49,7 @@ function Read-ApplicationOutput {
 }
 
 try {
-  $application = Start-Process -FilePath $resolvedApplication -WorkingDirectory $tempRoot -ArgumentList "--user-data-dir=$userDataDir", '--smoke-test' -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+  $application = Start-Process -FilePath $resolvedApplication -WorkingDirectory $tempRoot -ArgumentList "`"--user-data-dir=$userDataDir`"", '--smoke-test' -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
   $deadline = (Get-Date).AddSeconds(180)
   $baseUrl = $null
   while ((Get-Date) -lt $deadline -and $null -eq $baseUrl) {
@@ -55,8 +72,11 @@ try {
   if (-not $asset.Success) { throw '根页面未找到可验证的前端资源。' }
   $assetResponse = Invoke-WebRequest -Uri "$baseUrl$($asset.Groups['path'].Value)" -UseBasicParsing
   if ($assetResponse.StatusCode -ne 200) { throw "前端资源返回 HTTP $($assetResponse.StatusCode)。" }
+  if ($BrowserEnabled -and (Read-ApplicationOutput) -notmatch 'DSH_SMOKE_BROWSER\s+enabled=true\s+runtime=true') {
+    throw "应用没有成功加载随包浏览器自动化运行时：$(Read-ApplicationOutput)"
+  }
   if (-not $application.WaitForExit(30000)) { throw '应用未在冒烟模式下受控退出。' }
-  Write-Host "SMOKE_OK application=$resolvedApplication health=$baseUrl controlledExit=true"
+  Write-Host "SMOKE_OK application=$resolvedApplication health=$baseUrl controlledExit=true browserEnabled=$($BrowserEnabled.IsPresent.ToString().ToLowerInvariant()) isolatedUserData=true"
 } finally {
   if ($null -ne $application) {
     $application.Refresh()
@@ -75,7 +95,11 @@ try {
       $bootstrapStillRunning = $true
     }
   }
-  $env:DSH_HOME = $previousDshHome
+  $env:USERPROFILE = $previous.USERPROFILE
+  $env:HOME = $previous.HOME
+  $env:APPDATA = $previous.APPDATA
+  $env:LOCALAPPDATA = $previous.LOCALAPPDATA
+  $env:DSH_HOME = $previous.DSH_HOME
   $resolvedTempRoot = [System.IO.Path]::GetFullPath($tempRoot)
   if ($resolvedTempRoot.StartsWith($tempBase, [System.StringComparison]::OrdinalIgnoreCase)) {
     Remove-Item -LiteralPath $resolvedTempRoot -Recurse -Force -ErrorAction SilentlyContinue

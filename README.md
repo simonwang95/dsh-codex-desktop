@@ -26,6 +26,14 @@ Runtime candidates are installed under a versioned directory, checked for packag
 
 User sessions, credentials, and plugins remain under `~/.dsh`; runtime switching does not delete that profile.
 
+## Browser automation (macOS / Windows)
+
+Browser automation is disabled by default. After installing Google Chrome, enable it explicitly from **Help → Browser Automation…** and reload DSH. The installer includes a pinned Playwright MCP runtime, but no browser binary; automation always launches the system Chrome installation.
+
+The Windows x64 build supports a normally installed Chrome Stable and does not require macOS-style TCC automation permission. Enterprise Chrome policies or nonstandard portable Chrome installations may prevent Playwright from launching it; unsigned installers may still trigger SmartScreen.
+
+Each DSH session gets a separate persistent Chrome profile and output directory. It never reads the user's everyday Chrome profile or shares browser state with another session. Under the `workspace-write` permission preset, page reads, screenshots, and session-directory writes are available; clicks, typing, downloads, and other state-changing operations still require approval, while uploads are restricted to real file paths inside the current workspace. Disabling the feature terminates its browser processes but preserves session profiles for later use.
+
 ## Build and verification
 
 Required toolchain:

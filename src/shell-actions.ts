@@ -27,6 +27,7 @@ export type ShellActionId =
   | 'feedback'
   | 'show-shortcuts'
   | 'reload'
+  | 'browser-automation'
   | 'check-updates'
   | 'about'
 
@@ -96,8 +97,9 @@ export const SHELL_ACTIONS: readonly ShellActionDefinition[] = [
   { id: 'feedback', menu: 'help', group: 0, label: text('反馈', 'Feedback') },
   { id: 'show-shortcuts', menu: 'help', group: 1, label: text('显示键盘快捷键', 'Show Keyboard Shortcuts'), accelerator: 'CmdOrCtrl+/', globalShortcut: true, keywords: text('按键 命令', 'keys commands') },
   { id: 'reload', menu: 'help', group: 1, label: text('重新加载', 'Reload'), accelerator: 'CmdOrCtrl+R', globalShortcut: true, keywords: text('重载 插件 服务', 'reload plugins service') },
-  { id: 'check-updates', menu: 'help', group: 2, label: text('检查更新…', 'Check for Updates…') },
-  { id: 'about', menu: 'help', group: 2, label: text('关于 DSH Codex Desktop', 'About DSH Codex Desktop') },
+  { id: 'browser-automation', menu: 'help', group: 2, label: text('浏览器自动化…', 'Browser Automation…'), keywords: text('Chrome Playwright MCP 网页 操控', 'Chrome Playwright MCP web control') },
+  { id: 'check-updates', menu: 'help', group: 3, label: text('检查更新…', 'Check for Updates…') },
+  { id: 'about', menu: 'help', group: 3, label: text('关于 DSH Codex Desktop', 'About DSH Codex Desktop') },
 ]
 
 export function isChineseLocale(locale: string): boolean {

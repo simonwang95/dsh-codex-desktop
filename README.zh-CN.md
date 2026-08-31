@@ -26,6 +26,14 @@ DSH、Node 与 pnpm 版本统一声明在 `package.json#config.runtimeManifest`�
 
 用户会话、凭据和插件继续位于 `~/.dsh`；运行时切换不会删除 Profile。
 
+## 浏览器自动化（macOS / Windows）
+
+浏览器自动化默认关闭。安装 Google Chrome 后，可从“帮助”→“浏览器自动化…”显式启用并重载 DSH。安装包固定携带 Playwright MCP 运行时，但不捆绑浏览器；自动化始终启动系统 Chrome。
+
+Windows 版支持 x64 系统安装的 Chrome Stable，不需要 macOS TCC 自动化授权。企业 Chrome 策略或非标准便携版 Chrome 可能阻止 Playwright 启动；未签名安装包仍可能触发 SmartScreen。
+
+每个 DSH 会话使用独立且可持久化的 Chrome Profile 和输出目录，不读取日常 Chrome Profile，也不会与其他会话共享登录态。`workspace-write` 权限下允许页面读取、截图和会话目录写入；点击、输入、下载等可能改变状态的操作仍需审批，文件上传只允许来自当前工作区的真实文件路径。关闭功能会终止相关浏览器进程，但保留各会话 Profile，供下次启用后继续使用。
+
 ## 构建与验证
 
 固定工具链：
